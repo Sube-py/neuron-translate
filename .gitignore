@@ -10,3 +10,7 @@ dist/
 # Tooling caches
 .vitest/
 coverage/
+
+# Stray Python artifacts (pre-migration)
+__pycache__/
+*.py[co]
