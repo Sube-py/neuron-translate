@@ -104,49 +104,23 @@ class HttpAdapter:
         self._formatter = formatter or OpenAiFormatter()
 
     async def handle(self, request: Any) -> HttpResponse:
+        started = time.monotonic()
         request_id = self._request_id(request)
         method = str(self._attr(request, "method", "GET")).upper()
         path = urlsplit(str(self._attr(request, "url", "/"))).path or "/"
+        user_agent = (self._header(request, "user-agent") or "-")[:120]
         cors = self._cors.headers(self._header(request, "origin"))
         cors["x-request-id"] = request_id
 
         try:
-            if method == "OPTIONS":
-                return HttpResponse(status=204, headers=cors)
-
-            if method == "GET" and path in {"/", "/playground"}:
-                if not self._settings.playground_enabled:
-                    raise NotFoundError("Not found.")
-                return HttpResponse(
-                    status=200,
-                    body=render_playground(),
-                    headers=cors,
-                    content_type=HTML_CONTENT_TYPE,
-                )
-
-            if method == "GET" and path in {"/health", "/healthz"}:
-                return HttpResponse(status=200, body=self._app.health(), headers=cors)
-
-            if any(path.endswith(suffix) for suffix in MODELS_SUFFIXES):
-                if method != "GET":
-                    raise ApiError("Method not allowed.", code="method_not_allowed", status=405)
-                return HttpResponse(
-                    status=200,
-                    body=self._formatter.models(self._chat_app.models()),
-                    headers=cors,
-                )
-
-            if any(path.endswith(suffix) for suffix in CHAT_SUFFIXES):
-                if method != "POST":
-                    raise ApiError("Method not allowed.", code="method_not_allowed", status=405)
-                return await self._chat(request, request_id=request_id, headers=cors)
-
-            if path == "/translate":
-                if method != "POST":
-                    raise ApiError("Method not allowed.", code="method_not_allowed", status=405)
-                return await self._translate(request, request_id=request_id, headers=cors)
-
-            raise NotFoundError(f"No route matches {method} {path}.")
+            response = await self._route(
+                request,
+                method=method,
+                path=path,
+                request_id=request_id,
+                headers=cors,
+                user_agent=user_agent,
+            )
         except ApiError as exc:
             self._logger.warning(
                 "request.failed",
@@ -156,8 +130,9 @@ class HttpAdapter:
                 code=exc.code,
                 status=exc.status,
                 message=exc.message,
+                user_agent=user_agent,
             )
-            return HttpResponse(
+            response = HttpResponse(
                 status=exc.status,
                 body=self._error_body(exc, path=path, request_id=request_id),
                 headers=cors,
@@ -169,13 +144,91 @@ class HttpAdapter:
                 method=method,
                 path=path,
                 message=str(exc),
+                user_agent=user_agent,
             )
             internal = ApiError("Unexpected error.", code="internal_error", status=500)
-            return HttpResponse(
+            response = HttpResponse(
                 status=500,
                 body=self._error_body(internal, path=path, request_id=request_id),
                 headers=cors,
             )
+
+        self._logger.info(
+            "request.completed",
+            request_id=request_id,
+            method=method,
+            path=path,
+            status=response.status,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            user_agent=user_agent,
+            streamed=response.content_type.startswith("text/event-stream"),
+        )
+        return response
+
+    async def _route(
+        self,
+        request: Any,
+        *,
+        method: str,
+        path: str,
+        request_id: str,
+        headers: dict[str, str],
+        user_agent: str,
+    ) -> HttpResponse:
+        if method == "OPTIONS":
+            return HttpResponse(status=204, headers=headers)
+
+        if method == "GET" and path in {"/", "/playground"}:
+            if not self._settings.playground_enabled:
+                raise NotFoundError("Not found.")
+            return HttpResponse(
+                status=200,
+                body=render_playground(),
+                headers=headers,
+                content_type=HTML_CONTENT_TYPE,
+            )
+
+        if method == "GET" and path in {"/health", "/healthz"}:
+            return HttpResponse(status=200, body=self._app.health(), headers=headers)
+
+        if any(path.endswith(suffix) for suffix in MODELS_SUFFIXES):
+            if method != "GET":
+                raise ApiError("Method not allowed.", code="method_not_allowed", status=405)
+            return HttpResponse(
+                status=200,
+                body=self._formatter.models(self._chat_app.models()),
+                headers=headers,
+            )
+
+        if any(path.endswith(suffix) for suffix in CHAT_SUFFIXES):
+            if method != "POST":
+                raise ApiError("Method not allowed.", code="method_not_allowed", status=405)
+            return await self._chat(request, request_id=request_id, headers=headers)
+
+        if path == "/translate":
+            if method != "POST":
+                raise ApiError("Method not allowed.", code="method_not_allowed", status=405)
+            return await self._translate(request, request_id=request_id, headers=headers)
+
+        if self._looks_like_chat_attempt(method=method, path=path, user_agent=user_agent):
+            self._logger.warning(
+                "request.unknown_chat_path",
+                request_id=request_id,
+                method=method,
+                path=path,
+                user_agent=user_agent,
+            )
+        raise NotFoundError(
+            f"No route matches {method} {path}. "
+            "Use POST /v1/chat/completions, POST /translate, or GET /v1/models."
+        )
+
+    @staticmethod
+    def _looks_like_chat_attempt(*, method: str, path: str, user_agent: str) -> bool:
+        haystack = f"{path} {user_agent}".lower()
+        return method == "POST" or any(
+            hint in haystack for hint in ("openai", "chat", "translat", "gpt")
+        )
 
     def _error_body(self, error: ApiError, *, path: str, request_id: str) -> dict[str, Any]:
         if path.startswith(OPENAI_PREFIXES):

@@ -319,3 +319,39 @@ def test_chat_route_accepts_common_client_paths(path: str) -> None:
 
     assert response.status == 200
     assert response.body["object"] == "chat.completion"
+
+
+def test_request_logging_records_path_and_user_agent() -> None:
+    from observability import JsonLogger
+
+    class CapturingLogger(JsonLogger):
+        def __init__(self) -> None:
+            super().__init__(enabled=True)
+            self.events: list[tuple[str, dict]] = []
+
+        def _emit(self, level: str, event: str, fields: dict) -> None:
+            self.events.append((event, fields))
+
+    provider = FakeProvider()
+    settings = Settings()
+    logger = CapturingLogger()
+    app = TranslationApp(settings, TranslationService(provider, chunker=TextChunker(1000)), logger)
+    chat_app = ChatApp(ChatService(provider, default_model=settings.model), logger)
+    adapter = HttpAdapter(settings, app, chat_app, logger)
+
+    call(
+        adapter,
+        FakeRequest(
+            method="POST",
+            url="https://x.dev/v1/chat/completions",
+            payload={"messages": [{"role": "user", "content": "hi"}]},
+            headers=FakeHeaders({"user-agent": "Immersive-Translate/1.0"}),
+        ),
+    )
+
+    events = dict(logger.events)
+    completed = events["request.completed"]
+    assert completed["path"] == "/v1/chat/completions"
+    assert completed["status"] == 200
+    assert completed["user_agent"].startswith("Immersive-Translate")
+    assert "duration_ms" in completed
