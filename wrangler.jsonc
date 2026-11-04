@@ -1,16 +1,15 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "trans",
-  "main": "src/worker.py",
+  "main": "src/worker.ts",
   "compatibility_date": "2026-11-04",
-  "compatibility_flags": ["python_workers"],
 
   // Custom domains are attached once (dashboard or API) instead of being committed
   // here, so this file stays portable: see README "绑定自定义域".
   "workers_dev": true,
   "preview_urls": false,
 
-  // Single-page UI served as static assets; /api/* and /v1/* stay in Python.
+  // Single-page UI served as static assets; /api/* and /v1/* stay in the Worker.
   "assets": {
     "directory": "./web",
     "binding": "ASSETS",
@@ -22,7 +21,8 @@
     "binding": "AI"
   },
 
-  // Runtime configuration. Secrets (TRANSLATION_API_TOKEN) go to `wrangler secret put`.
+  // Runtime configuration. Secrets (TRANSLATION_API_TOKEN, ANALYTICS_*) go to
+  // `wrangler secret put`.
   "vars": {
     "TRANSLATION_MODEL": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
     "AI_GATEWAY_ID": "default",
@@ -43,7 +43,7 @@
       "enabled": true,
       "head_sampling_rate": 1
     },
-    // Structured JSON logs emitted by JsonLogger.
+    // Structured JSON logs emitted by the logger.
     "logs": {
       "enabled": true,
       "head_sampling_rate": 1

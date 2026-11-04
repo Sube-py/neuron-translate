@@ -735,6 +735,7 @@ console.log(res.choices[0].message.content);</pre>
         ${kvRow("单分片最大输出 tokens", fmt(state.session?.limits?.max_output_tokens, 0))}
         ${kvRow("AI Gateway", state.session?.gateway ?? "-")}
         ${kvRow("用量统计", state.session?.features?.usage_analytics ? "已配置" : "未配置")}
+        ${kvRow("流式输出", state.session?.features?.streaming ? "逐 token SSE" : "单帧 SSE")}
       </div>
     `,
   }[tab];

@@ -1,129 +1,113 @@
 # neuron-translate
 
-Cloudflare Workers 上的翻译服务：**Python Worker + Workers AI + AI Gateway + Workers Tracing**。
+Cloudflare 上的翻译服务：**TypeScript Worker + Workers AI + AI Gateway + Workers Tracing**。
+
+- `POST /v1/chat/completions`：**OpenAI 兼容**，SSE **逐 token 真流式**，可直接给沉浸式翻译、NextChat、Cherry Studio、Bob 等用
+- `POST /translate`：内建分片、术语表、语气、模型覆盖
+- `GET /`：Web 控制台（登录 / 用量 / 翻译 / 接入）
+- 所有推理走 AI Gateway：日志、缓存、metadata、限流；Worker 侧开启 tracing
 
 > 仓库名 `neuron-translate`，Worker 服务名是 `trans`（见 `wrangler.jsonc`）。改 Worker 名会导致自定义域需要重新绑定，所以两者故意不一致。
 
-- `POST /v1/chat/completions`：**OpenAI 兼容**接口，可直接给沉浸式翻译、NextChat、Cherry Studio、Bob 等插件/客户端用
-- `POST /translate`：自用的翻译接口，内建分片、术语表（glossary）、语气（tone）
-- 所有模型调用都经过 **AI Gateway**：统一日志、可选响应缓存、自定义 metadata（可按请求 ID 检索）
-- **Workers Traces** 自动采集 handler / binding 调用的 span，可导出到任意 OTel 后端
-- `GET /` 是一个 Web 控制台（登录 → 用量面板 / 翻译面板 / 接入指引），`GET /healthz` 用于健康检查
+## 特性
 
-> 从 `worker.py` 到 `provider`、`translator`、`http_adapter` 每一层都只依赖抽象，方便替换模型或换个入口（HTTP、队列、Cron）。
-
----
+| | |
+| --- | --- |
+| 真流式 | `env.AI.run(..., { stream: true })` → `TransformStream` 重组成 OpenAI SSE，无额外 token、无中继 |
+| 长文 | 按段落/句子切分，并发翻译后按原分隔符拼回 |
+| 模型选择 | 内置模型清单，支持全名或 `glm-4.7-flash` 这类短名；reasoning 模型可用 |
+| 护栏 | Bearer 鉴权、CORS 白名单、字符/并发上限、2MB body |
+| 观测 | Workers Traces 自动 span、AI Gateway 调用日志（带 `request_id`）、结构化 JSON 日志 |
+| 用量 | `/api/usage` 读 Cloudflare GraphQL Analytics，展示今日 neurons / 剩余额度 / 按模型拆分 |
 
 ## 目录结构
 
 ```
-wrangler.jsonc           # Worker 配置：AI binding、observability.traces、运行参数
-web/                     # 静态 SPA：登录页、用量面板、翻译面板、接入指引
-web/app.js               # 单文件前端（vanilla ESM，无构建步骤）
-web/styles.css           # 暗色玻璃拟态样式，含登录页动效
-src/worker.py            # WorkerEntrypoint：装配依赖，转成 Workers Response
-src/http_adapter.py      # 路由 / CORS / 鉴权 / 错误渲染（与运行时无关，可单测）
-src/app.py               # 用例层：校验 → 翻译 → 打点
-src/translator.py        # 分片、并发、AI Gateway metadata、缓存 key、结果拼装
-src/chat_validation.py   # OpenAI 请求体校验（messages / stream / 温度 / max_tokens）
-src/chat_service.py      # OpenAI → Workers AI 转发、模型名映射
-src/openai_format.py     # OpenAI 响应体 / SSE 帧 / 错误体 / models 列表
-src/usage.py             # 用量统计：Cloudflare GraphQL Analytics → 每日/按模型聚合
-src/chunking.py          # 按段落/句子切分长文，拼接时可还原原文结构
-src/prompting.py         # 翻译 prompt、语言名称映射
-src/worker_ai.py         # Workers AI provider（env.AI + AI Gateway options）
-src/response_parser.py   # 兼容 response / choices / output 多种返回结构
-src/settings.py          # 从 env 读取配置（带类型转换与默认值）
-src/observability.py     # 结构化 JSON 日志
-tests/                   # 86 个纯 Python 单测，不需要 Workers 运行时
+wrangler.jsonc            # AI binding、静态资源、observability.traces、vars
+src/worker.ts            # Worker 入口：装配依赖，/api 与静态资源分流
+src/http/router.ts       # 路由 / CORS / 鉴权 / 错误渲染 / 静态回退
+src/http/auth.ts         # Bearer + X-API-Key 校验（常数时间比较）
+src/config/settings.ts   # env → Settings（类型转换 + 默认值）
+src/translate/           # 校验、分片、prompt、并发编排
+src/chat/                # OpenAI 请求校验、服务、SSE 重组
+src/provider/            # Workers AI 调用、AI Gateway 选项、响应解析、模型目录
+src/usage/               # GraphQL 客户端 + 每日/按模型聚合
+src/observability/       # JSON 日志
+web/                     # 静态 SPA（无构建步骤）：登录 / 用量 / 翻译 / 接入
+tests/                   # 104 个 vitest 单测，不需要 Workers 运行时
+scripts/neuron-usage.mjs # 命令行查当日 neurons 用量
 ```
 
 ## 快速开始
 
-前置：`uv`（≥ 0.13.4）、Node.js。
+```bash
+npm install
+cp .dev.vars.example .dev.vars      # 本地开发用的可选 API Token
+npx wrangler login                  # 一次性授权
+npm run dev                         # http://localhost:8787
+```
 
 ```bash
-uv sync
-cp .dev.vars.example .dev.vars       # 本地开发用的可选 API Token
-
-uv run pywrangler dev                # 需要 `wrangler login`，AI binding 走远端推理
-curl -s localhost:8787/healthz
-
 curl -s localhost:8787/translate \
   -H 'content-type: application/json' \
   -d '{"text":"Cloudflare Workers AI is fast.","target_lang":"zh-CN"}'
 ```
 
-响应示例：
-
-```json
-{
-  "request_id": "a1b2c3d4e5f6",
-  "translation": "Cloudflare Workers AI 很快。",
-  "meta": {
-    "model": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
-    "gateway": "default",
-    "chunks": 1,
-    "cached_chunks": 0,
-    "tokens": { "prompt": 132, "completion": 24, "total": 156 },
-    "duration_ms": 780
-  }
-}
-```
-
 部署：
 
 ```bash
-uv run pywrangler deploy
-uv run pywrangler secret put TRANSLATION_API_TOKEN   # 可选，开启鉴权
+npm run deploy
+printf '%s' "$TOKEN" | npx wrangler secret put TRANSLATION_API_TOKEN --name trans   # 可选，开启鉴权
 ```
-
-部署后地址：
 
 | 用途 | URL |
 | --- | --- |
-| OpenAI 兼容 Base URL | `https://<worker>.<subdomain>.workers.dev/v1` |
-| OpenAI 兼容完整路径 | `.../v1/chat/completions` |
+| OpenAI Base URL | `https://<worker>.<subdomain>.workers.dev/v1` |
 | 自用翻译接口 | `.../translate` |
 | Web 控制台 | `.../` |
 
 ### 绑定自定义域（可选）
 
-`wrangler.jsonc` 刻意不写 `routes`，避免把个人域名提交进仓库。自定义域只需要挂一次，之后 `pywrangler deploy` 不会动它：
+`wrangler.jsonc` 刻意不写 `routes`，避免把个人域名提交进仓库。自定义域挂一次，之后 `wrangler deploy` 不会动它：
 
-- Dashboard：**Workers & Pages → trans → Settings → Domains & Routes → Add → Custom domain**（Cloudflare 自动建 DNS 记录和证书）
+- Dashboard：**Workers & Pages → trans → Settings → Domains & Routes → Add → Custom domain**
 - 或 API：
 
 ```bash
 curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" \
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'content-type: application/json' \
-  -d '{"zone_id":"<你的 zone id>","hostname":"trans.example.com","service":"trans","environment":"production"}'
+  -d '{"zone_id":"<zone id>","hostname":"trans.example.com","service":"trans","environment":"production"}'
 ```
 
-挂上后把上面表格里的地址换成你的域名即可（例如 `https://trans.example.com/v1`）。
+> `workers_dev: true` 会保留 `*.workers.dev` 入口；不想暴露就改成 `false` 再部署。
 
-> 注意：`workers_dev: true` 会同时保留 `<worker>.<subdomain>.workers.dev` 入口。不想暴露就在部署前把它改成 `false`（接口本身有 token 保护，不会裸奔）。
-> 另外 `*.workers.dev` 在部分网络（如中国内地）被污染/阻断，这种情况只能走自定义域。
+## 鉴权
 
-## OpenAI 兼容接口（给插件 / 客户端用）
+`/translate`、`/v1/chat/completions`、`/api/*` 需要鉴权（配置了 `TRANSLATION_API_TOKEN` 时）：
+
+```
+Authorization: Bearer <token>
+# 或 X-API-Key: <token>
+```
+
+`/healthz`、`/v1/models`、`/` 与静态资源不需要鉴权（不消耗推理额度）。
+
+```bash
+printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLATION_API_TOKEN --name trans
+```
+
+## OpenAI 兼容接口
 
 | 配置项 | 值 |
 | --- | --- |
-| Base URL | `https://trans.example.com/v1` |
-| API Key | 配了 `TRANSLATION_API_TOKEN` 就填它；没配则任意字符串（如 `sk-local`） |
-| Model | `@cf/meta/llama-3.1-8b-instruct-fp8-fast`（也可填 70B / GLM / Qwen3 等，见 `/api/models`） |
-
-- 模型名无所谓：非 `@cf/` 开头的一律映射到默认模型（所以填 `gpt-4o-mini`、`gpt-3.5-turbo` 也能用）；`@cf/` 开头的会原样透传
-- 请求里的 `messages` 原样转给模型，插件自带的 system prompt 会生效
-- 额外可选字段 `target_lang` / `tone` / `glossary`，会以追加 system 规则的方式注入（标准客户端不需要）
-- `stream: true` 返回 SSE：`role` → `content` → `stop` + `[DONE]`，`stream_options.include_usage` 会在最后一帧带 usage
-- 错误为 OpenAI 格式：`{"error":{"message","type","param","code"}}`
+| Base URL | `https://<你的域名>/v1` |
+| API Key | `TRANSLATION_API_TOKEN` |
+| Model | 任意名字都可以；非 `@cf/` 前缀会映射到默认模型 |
 
 ```bash
 # 非流式
-curl -s https://trans.example.com/v1/chat/completions \
-  -H 'content-type: application/json' \
-  -d '{
+curl -s https://<域名>/v1/chat/completions -H 'content-type: application/json' \
+  -H 'authorization: Bearer <key>' -d '{
     "model": "gpt-4o-mini",
     "messages": [
       {"role": "system", "content": "Translate into Simplified Chinese. Output only the translation."},
@@ -131,219 +115,92 @@ curl -s https://trans.example.com/v1/chat/completions \
     ]
   }'
 
-# 流式
-curl -sN https://trans.example.com/v1/chat/completions \
-  -H 'content-type: application/json' \
-  -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Translate to Japanese: Good morning"}]}'
-
-# 模型列表（很多客户端会先拉这个）
-curl -s https://trans.example.com/v1/models
+# 流式（逐 token）
+curl -sN https://<域名>/v1/chat/completions -H 'content-type: application/json' \
+  -H 'authorization: Bearer <key>' -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Translate to Japanese: good morning"}]}'
 ```
 
-各客户端怎么填：
+- `stream_options.include_usage = true` 时最后一帧带 `usage`
+- 支持 `target_lang` / `tone` / `glossary` 作为额外 system 规则注入（标准客户端不需要）
+- 错误为 OpenAI 格式：`{"error":{"message","type","param","code"}}`
+- reasoning 模型（glm-4.7-flash / gemma-4 / qwen3 / gpt-oss）：不传 `max_tokens` 时不下发该字段，模型按自身预算生成；思考吃光预算会返回 `reasoning_budget_exhausted`
+
+### 客户端填法
 
 | 客户端 | 填法 |
 | --- | --- |
-| 沉浸式翻译 | 设置 → 翻译服务 → 添加 → OpenAI（ChatGPT）：API Key 填 `TRANSLATION_API_TOKEN`；自定义 API 地址填 `https://<你的域名>/v1/chat/completions`；模型填 `@cf/meta/llama-3.1-8b-instruct-fp8-fast`；保持「流式输出」开启 |
-| NextChat / Cherry Studio | 自定义 OpenAI：Base URL `https://trans.example.com/v1`，模型自定义填上面的模型名 |
-| Bob / Pot 等 macOS 工具 | OpenAI 兼容 → API 域名 `trans.example.com`，路径 `/v1/chat/completions` |
-| 代码里用 openai SDK | `OpenAI(base_url="https://trans.example.com/v1", api_key="sk-local")` |
+| 沉浸式翻译 | 设置 → 翻译服务 → 添加 → OpenAI（ChatGPT）：API Key 填 token；自定义 API 地址 `https://<域名>/v1/chat/completions`；模型 `@cf/meta/llama-3.1-8b-instruct-fp8-fast`；保持「流式输出」开启 |
+| NextChat / Cherry Studio | 自定义 OpenAI：Base URL `https://<域名>/v1` |
+| Bob / Pot | API 域名 `<域名>`，路径 `/v1/chat/completions` |
+| SDK | `OpenAI(base_url="https://<域名>/v1", api_key="<token>")` |
 
-> 流式的实现是「整段生成完再按 SSE 分帧下发」，客户端解析完全兼容，但不是逐 token 出字，首字延迟 ≈ 整段生成时间。要真流式需要把 `env.AI.run(..., {"stream": true})` 返回的 ReadableStream 直接透传，见文末「已知边界」。
-
-## 鉴权
-
-`/translate` 与 `/v1/chat/completions` 都要求鉴权（配了 `TRANSLATION_API_TOKEN` 时）：
-
-```
-Authorization: Bearer <TRANSLATION_API_TOKEN>
-# 或 X-API-Key: <TRANSLATION_API_TOKEN>
-```
-
-`/healthz`、`/v1/models`、`/`、静态资源不需要鉴权（都不消耗 Workers AI 额度，模型列表只暴露模型 id）。
-
-UI 内部用的两个接口（同样走 Bearer 鉴权）：
-
-| 接口 | 用途 |
-| --- | --- |
-| `GET /api/verify` | 校验 Key 并返回模型、网关与各项限制 |
-| `GET /api/models` | 可用模型清单（含 reasoning 标记与推荐说明） |
-| `GET /api/usage?days=7` | 今日/近 7 天 neurons 用量、剩余额度、按模型拆分 |
-
-**关于 reasoning 模型**（`glm-4.7-flash` / `gemma-4-26b` / `qwen3` / `gpt-oss`）：它们先输出思考再给正文。`/v1/*` 不传 `max_tokens` 时不会下发这个字段，模型按自身默认生成，思考再长也能完成；`/translate` 则沿用 `TRANSLATION_MAX_OUTPUT_TOKENS`（默认 2048）。如果思考吃光预算，会返回 `reasoning_budget_exhausted` 而不是空译文。
-
-写入 / 轮换 token：
-
-```bash
-printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLATION_API_TOKEN
-# 本地开发同步写到 .dev.vars（已在 .gitignore 中）
-```
-
-## API
-
-### `POST /translate`
+## 自用接口 `POST /translate`
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `text` | string | ✅ | 原文，默认上限 20000 字符 |
-| `target_lang` | string | ➖ | 目标语言，默认 `en`，如 `zh-CN` / `ja` |
-| `source_lang` | string | ➖ | 默认 `auto`，自动识别 |
-| `tone` | string | ➖ | 语气要求，如 `formal`、`casual`、`marketing` |
-| `glossary` | object | ➖ | 术语表 `{"workers": "无服务器"}`，最多 50 条 |
-| `preserve_formatting` | bool | ➖ | 默认 `true`，保留 Markdown / HTML / 占位符 |
-| `model` | string | ➖ | 覆盖默认模型，支持 `@cf/meta/...` 全名或 `glm-4.7-flash` 这类短名（见 `GET /api/models`） |
+| `text` | string | ✅ | 原文，上限 `TRANSLATION_MAX_TEXT_CHARS` |
+| `target_lang` | string | ➖ | 默认 `en` |
+| `source_lang` | string | ➖ | 默认 `auto` |
+| `tone` | string | ➖ | 语气要求 |
+| `glossary` | object | ➖ | `{"workers": "无服务器"}`，最多 50 条 |
+| `preserve_formatting` | bool | ➖ | 默认 `true` |
+| `model` | string | ➖ | 全名或短名，见 `GET /api/models` |
 
-鉴权（配置了 `TRANSLATION_API_TOKEN` 时必填）：`Authorization: Bearer <token>` 或 `X-API-Key: <token>`。
+响应带 `meta`：model / gateway / chunks / cached_chunks / tokens / duration_ms。
 
-错误统一格式，且都带 `request_id`：
+## 控制台 API
 
-```json
-{ "request_id": "…", "error": { "code": "invalid_request", "message": "…", "field": "text" } }
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/verify` | 校验 Key，返回模型、网关、限制 |
+| `GET /api/models` | 模型清单（含 reasoning 标记） |
+| `GET /api/usage?days=7` | 今日 / 近 7 天 neurons、剩余额度、按模型拆分 |
+
+用量页需要两个 secret（只读分析 Token，浏览器拿不到）：
+
+```bash
+printf '%s' <account_id> | npx wrangler secret put ANALYTICS_ACCOUNT_ID --name trans
+printf '%s' <api_token>  | npx wrangler secret put ANALYTICS_API_TOKEN --name trans
 ```
 
-### `GET /healthz`
+Token 权限：**Account → Account Analytics → Read**。没配置时用量页会直接显示这组命令，不影响翻译。
 
 ## 配置（`wrangler.jsonc` 的 `vars`）
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `TRANSLATION_MODEL` | `@cf/meta/llama-3.1-8b-instruct-fp8-fast` | 任意 Workers AI 模型；也可用第三方模型，见下 |
-| `AI_GATEWAY_ID` | `default` | AI Gateway 名称，`default` 首次请求时自动创建 |
-| `AI_GATEWAY_CACHE_TTL` | `0` | >0 时按内容哈希复用 AI Gateway 缓存（秒） |
-| `AI_GATEWAY_COLLECT_LOGS` | `true` | 是否写 AI Gateway 日志（含请求/响应正文） |
-| `TRANSLATION_CHUNK_CHARS` | `3000` | 单次推理的最大字符数 |
+| `TRANSLATION_MODEL` | `@cf/meta/llama-3.1-8b-instruct-fp8-fast` | 默认模型 |
+| `AI_GATEWAY_ID` | `default` | AI Gateway 名称 |
+| `AI_GATEWAY_CACHE_TTL` | `0` | >0 时按内容哈希复用缓存（秒） |
+| `AI_GATEWAY_COLLECT_LOGS` | `true` | 是否写 AI Gateway 日志（含正文） |
+| `TRANSLATION_CHUNK_CHARS` | `3000` | 分片阈值 |
 | `TRANSLATION_MAX_TEXT_CHARS` | `20000` | 单请求原文上限 |
-| `TRANSLATION_MAX_CONCURRENCY` | `4` | 分片并发数（1–8） |
+| `TRANSLATION_MAX_OUTPUT_TOKENS` | `2048` | `/translate` 单分片输出上限（`/v1/*` 不传就不限制） |
 | `TRANSLATION_TEMPERATURE` | `0.1` | 采样温度 |
-| `TRANSLATION_MAX_OUTPUT_TOKENS` | `2048` | `/translate` 单分片输出上限（`/v1/*` 不传就是模型默认，不限） |
-| `CORS_ALLOWED_ORIGINS` | `*` | 逗号分隔的白名单 |
+| `TRANSLATION_MAX_CONCURRENCY` | `4` | 分片并发（1–8） |
+| `CORS_ALLOWED_ORIGINS` | `*` | 逗号分隔白名单 |
+| `USAGE_DAYS` | `7` | 用量窗口 |
 
-> **默认模型**：`llama-3.1-8b-instruct-fp8-fast`（快、约 9,000 次/天）；要质量就换 `llama-3.3-70b-instruct-fp8-fast`。
-> `llama-3.1-8b-instruct`（非 fp8-fast）已于 2026-05-30 下线。
-> 带 reasoning 的模型（`qwen3-30b-a3b-fp8`、`gpt-oss-120b`）会先输出思考内容、正文可能为空，用作纯翻译需额外关掉 thinking，暂不建议。
->
-> 若想用 OpenAI / Anthropic 等第三方模型，直接把 `TRANSLATION_MODEL` 设为 `openai/gpt-4.1-mini` 之类的 ID（需开启 AI Gateway Unified Billing）；代码无需改动。
+## Tracing / 观测
 
----
+1. **Workers Traces**：`observability.traces.enabled=true` + `head_sampling_rate=1`，自动采集 handler 与 `env.AI` binding 调用的 span，看 Dashboard → Workers → Observability → Traces
+2. **AI Gateway 日志**：每次推理一条，带 `request_id` / `mode` / `chunk` / `chars` / `stream` 五个 metadata，可按 request_id 检索
+3. **结构化日志**：`request.completed`（method/path/status/duration/user_agent）、`translation.completed`、`chat.completed`、`chat.streamed`、`usage.reported`
 
-## Tracing / 可观测性
-
-这套方案有三层可观测数据，互相用 `request_id` 关联：
-
-### 1. Workers Traces（平台自动埋点）
-
-`wrangler.jsonc`：
-
-```jsonc
-"observability": {
-  "enabled": true,
-  "traces": { "enabled": true, "head_sampling_rate": 1 },
-  "logs":   { "enabled": true, "head_sampling_rate": 1 }
-}
-```
-
-- 自动采集 fetch handler 生命周期、Workers AI binding 调用、出网子请求的 span，无需写代码
-- `head_sampling_rate` 默认 `1`（100%）。生产高 QPS 建议降到 `0.05` 之类的比例（`0` 表示不采样）
-- 在 Dashboard → Workers → 你的 Worker → Observability → Traces 查看瀑布图
-- 需要接入 Grafana / Honeycomb / Axiom 时，用 [OpenTelemetry export](https://developers.cloudflare.com/workers/observability/opentelemetry-export/)，`persist: false` 可只外发不落 Cloudflare
-
-### 2. AI Gateway 日志（模型调用级）
-
-每次 `env.AI.run` 都会带上：
-
-```python
-{
-  "gateway": {
-    "id": "default",
-    "collectLog": True,
-    "cacheTtl": 0,
-    "metadata": {
-      "request_id": "…", "target_lang": "zh-CN",
-      "source_lang": "auto", "chunk": "1/3", "chars": 2900
-    }
-  }
-}
-```
-
-- AI Gateway 单次请求最多保存 5 个 metadata 键（本实现正好 5 个，有单测覆盖）
-- Dashboard → AI Gateway → Logs 可按 `request_id` 过滤，看到每片的 prompt / 响应 / token / 耗时
-- `AI_GATEWAY_CACHE_TTL > 0` 时用 `sha256(model + system prompt + 原文)` 作为 cache key，命中会体现在 `meta.cached_chunks`
-
-### 3. 结构化日志（`JsonLogger`）
-
-每个请求一行 JSON，`wrangler tail` 直接可读可 grep：
-
-```json
-{"service":"trans","level":"info","event":"translation.completed","request_id":"…","model":"@cf/meta/llama-3.1-8b-instruct-fp8-fast","gateway":"default","chunks":1,"input_chars":28,"duration_ms":780,"tokens":{"prompt":132,"completion":24,"total":156}}
-```
-
-失败路径会打 `request.failed`（含 code/status），未捕获异常打 `request.crashed`。
-
-### 隐私提醒
-
-- Workers Traces 是**平台级**埋点，不包含 prompt 正文
-- AI Gateway 日志默认会保存请求/响应正文（即用户文本）。若内容敏感，把 `AI_GATEWAY_COLLECT_LOGS` 设为 `false`，或在 Gateway 侧配置 DLP / 只在测试环境开日志
-- 不要把 API Token、用户 PII 放进 AI Gateway metadata（metadata 会长期存储）
-
----
-
-## Web 控制台
-
-访问 Worker 域名即为控制台，首次进入是登录页（Key 存在浏览器 localStorage，不落服务端）。
-
-| 页面 | 说明 |
-| --- | --- |
-| `#/stats`（默认） | 今日 neurons 用量环、剩余额度、请求数/tokens、近 7 天柱状图、按模型拆分 |
-| `#/translate` | 源文/译文双栏，**模型选择**（含 reasoning 标记）、语言与语气，⌘/Ctrl+Enter 提交，带模型/tokens/耗时/request id |
-| `#/setup` | 沉浸式翻译、OpenAI SDK、curl 三套接入片段 + 一键复制 |
-| `#/limits` | 并入接入页「限制」标签：字符上限、分片并发、网关、统计是否开启 |
-
-用量页需要一个只读的分析 Token（Worker 侧存为 secret，浏览器永远拿不到）：
-
-1. Dashboard → **My Profile → API Tokens → Create Token**
-2. 权限选 **Account → Account Analytics → Read**
-3. 写入 secret（无需重新部署）：
-
-```bash
-# 在项目根目录执行；不在的话加 --name trans 指定 Worker
-printf '%s' <account_id>  | npx wrangler secret put ANALYTICS_ACCOUNT_ID --name trans
-printf '%s' <api_token>   | npx wrangler secret put ANALYTICS_API_TOKEN --name trans
-```
-
-没配置时用量页会把这个步骤直接显示出来，不影响翻译功能。
-
-## 查看额度 / 用量
-
-免费额度是 **10,000 neurons/天**（UTC 00:00 重置），但 CF 控制台里没有「剩余额度」这个数字，只有「今天已用」的曲线，所以容易找不到：
-
-- 控制台：`https://dash.cloudflare.com/?to=/:account/ai/workers-ai` → 左侧 **AI → Workers AI**，页面上的 Usage / Neurons 图（另有 **AI Gateway → default → Analytics** 看单网关的请求量与成本）
-- 命令行（按模型拆分、直接算占比和超额费用）：
-
-```bash
-python3 scripts/neuron_usage.py            # 最近 1 天
-python3 scripts/neuron_usage.py --days 7   # 最近 7 天（上限 7）
-python3 scripts/neuron_usage.py --json     # 给脚本/告警用
-```
-
-脚本通过 Cloudflare GraphQL Analytics `aiInferenceAdaptiveGroups` 拉数据，凭据顺序：`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` 环境变量 → 否则复用本机 `wrangler login` 的 OAuth token（会自动解析 account id）。
+> AI Gateway 日志会保存请求/响应正文；敏感场景把 `AI_GATEWAY_COLLECT_LOGS` 设为 `false`。
 
 ## 开发与校验
 
 ```bash
-uv run pytest                      # 86 个单测（纯 CPython，不依赖 Workers 运行时）
-uv run ruff format src tests
-uv run ruff check src tests
-uv run pywrangler deploy --dry-run --outdir dist   # 校验打包（47 个模块）
+npm test             # 104 个单测（vitest）
+npm run typecheck    # tsc --noEmit
+npx wrangler deploy --dry-run --outdir dist   # 打包校验
+node scripts/neuron-usage.mjs --days=1        # 当日 neurons 用量
 ```
-
-本地与线上已验证：静态资源与 SPA 回退、`/healthz`、`/api/verify`、`/api/usage`、`/translate`、`/v1/chat/completions`（含 SSE），以及 `observability.traces` 在本地 workerd 中确实产出 span。UI 在真实浏览器里跑过登录、翻译（1.4s / 219 tokens）与接入页。
 
 ## 已知边界
 
-- OpenAI 兼容接口的流式是「生成完成后按 SSE 分帧」，不是逐 token 流。要真流式：`WorkersAiProvider` 增加 `stream: true`，把 binding 返回的 `ReadableStream` 经 `Response` 直接透传（Python Worker 里用 `js` 侧对象包装），`HttpAdapter` 跳过 `OpenAiFormatter.stream_body`
-- 纯文本/Markdown 效果好；代码块的逐行保护仅依赖 prompt，如需强保证可改为先抽取占位符再回填
-- Python Workers 仍处于 beta：`pywrangler` 需要 `uv >= 0.13.4`，且 AI binding 在本地 `dev` 时需要登录以走远端推理
-
-## License
-
-[MIT](LICENSE)
+- `/translate` 一次性返回（内部可并发分片）；需要逐 token 的应用走 `/v1/chat/completions`
+- 代码块/占位符保护依赖 prompt，极端格式仍需人工确认
+- reasoning 模型首字更慢（思考阶段无输出），插件体验不如 8B/70B
+- 自定义 span（`tracing.enterSpan`）还没接；需要时可在 `HttpApp` 里加

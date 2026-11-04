@@ -1,23 +1,12 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
+# Node
+node_modules/
 dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-.venv-workers/
-python_modules/
-pylock.toml
+*.log
 
 # Cloudflare / wrangler
 .wrangler/
 .dev.vars
-node_modules/
-wrangler.local.jsonc
 
-# Test / tooling caches
-.pytest_cache/
-.ruff_cache/
+# Tooling caches
+.vitest/
+coverage/
