@@ -1,0 +1,46 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "trans",
+  "main": "src/worker.py",
+  "compatibility_date": "2026-11-04",
+  "compatibility_flags": ["python_workers"],
+
+  // Custom domains are attached once (dashboard or API) instead of being committed
+  // here, so this file stays portable: see README "绑定自定义域".
+  "workers_dev": true,
+  "preview_urls": false,
+
+  // Workers AI binding: env.AI.run() with AI Gateway options.
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Runtime configuration. Secrets (TRANSLATION_API_TOKEN) go to `wrangler secret put`.
+  "vars": {
+    "TRANSLATION_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "AI_GATEWAY_ID": "default",
+    // 0 disables AI Gateway response caching, e.g. 3600 for one hour.
+    "AI_GATEWAY_CACHE_TTL": "0",
+    "AI_GATEWAY_COLLECT_LOGS": "true",
+    "TRANSLATION_CHUNK_CHARS": "3000",
+    "TRANSLATION_MAX_TEXT_CHARS": "20000",
+    "TRANSLATION_MAX_CONCURRENCY": "4",
+    "CORS_ALLOWED_ORIGINS": "*",
+    "PLAYGROUND_ENABLED": "true"
+  },
+
+  "observability": {
+    "enabled": true,
+    // Workers traces: automatic spans for the fetch handler, binding calls
+    // (Workers AI) and outbound subrequests.
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    // Structured JSON logs emitted by JsonLogger.
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  }
+}

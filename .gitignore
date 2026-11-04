@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.venv-workers/
+python_modules/
+pylock.toml
+
+# Cloudflare / wrangler
+.wrangler/
+.dev.vars
+node_modules/
+wrangler.local.jsonc
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
