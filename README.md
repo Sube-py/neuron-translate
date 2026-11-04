@@ -31,9 +31,10 @@ src/config/settings.ts   # env → Settings（类型转换 + 默认值）
 src/translate/           # 校验、分片、prompt、并发编排
 src/chat/                # OpenAI 请求校验、服务、SSE 重组
 src/provider/            # Workers AI 调用、AI Gateway 选项、响应解析、模型目录
+src/audio/               # TTS 模型目录、校验、合成（自动识别 WAV/MP3）
 src/usage/               # GraphQL 客户端 + 每日/按模型聚合
 src/observability/       # JSON 日志
-web/                     # 静态 SPA（无构建步骤）：登录 / 用量 / 翻译 / 接入
+web/                     # 静态 SPA（无构建步骤）：登录 / 用量 / 翻译 / 语音 / 接入
 tests/                   # 104 个 vitest 单测，不需要 Workers 运行时
 scripts/neuron-usage.mjs # 命令行查当日 neurons 用量
 ```
@@ -134,6 +135,28 @@ curl -sN https://<域名>/v1/chat/completions -H 'content-type: application/json
 | Bob / Pot | API 域名 `<域名>`，路径 `/v1/chat/completions` |
 | SDK | `OpenAI(base_url="https://<域名>/v1", api_key="<token>")` |
 
+## 语音合成 `POST /v1/audio/speech`
+
+兼容 OpenAI 的 speech 接口，返回音频二进制（`content-type` 按实际容器自动识别）。
+
+```bash
+curl -s https://<域名>/v1/audio/speech -H 'content-type: application/json' \
+  -H 'authorization: Bearer <key>' \
+  -d '{"model":"melotts","input":"你好，世界","lang":"zh"}' -o speech.wav
+```
+
+| 模型 | 价格 | 实测延迟 | 84 字符的估算 neurons | 输出 |
+| --- | --- | --- | --- | --- |
+| `@cf/myshell-ai/melotts` | $0.000205 / 音频分钟 | **~0.6s** | **~1.7** | WAV（未压缩，约 450KB/7s） |
+| `@cf/deepgram/aura-1` | $0.015 / 1k 字符 | ~0.7s | ~115 | MP3 48kbps（34KB） |
+| `@cf/deepgram/aura-2-en` | $0.030 / 1k 字符 | ~2.9s | ~229 | MP3 48kbps（43KB） |
+
+- 支持 `model`（全名或短名：`melotts` / `aura-1` / `aura-2-en`）、`input`、`voice`、`lang`
+- 响应头带 `x-tts-model`、`x-tts-neurons`（估算）、`x-tts-duration-ms`
+- 模型清单：`GET /api/models?kind=tts`
+- 结论：**MeloTTS 又便宜又快**，适合逐段朗读/翻译后朗读；Aura 系列更自然但贵 60–130 倍，只在需要播音级音色时用
+- `aura-2-en` 只支持英文，传其它语言会直接 400
+
 ## 自用接口 `POST /translate`
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -153,7 +176,8 @@ curl -sN https://<域名>/v1/chat/completions -H 'content-type: application/json
 | 接口 | 说明 |
 | --- | --- |
 | `GET /api/verify` | 校验 Key，返回模型、网关、限制 |
-| `GET /api/models` | 模型清单（含 reasoning 标记） |
+| `GET /api/models` | 对话模型清单（含 reasoning 标记） |
+| `GET /api/models?kind=tts` | 语音模型清单（含价格、音色、语言） |
 | `GET /api/usage?days=7` | 今日 / 近 7 天 neurons、剩余额度、按模型拆分 |
 
 用量页需要两个 secret（只读分析 Token，浏览器拿不到）：

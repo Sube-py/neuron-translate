@@ -684,7 +684,7 @@ th.mono {
 .pane {
   display: grid;
   gap: 10px;
-  height: 100%;
+  grid-template-rows: auto 1fr;
 }
 
 .pane-head {

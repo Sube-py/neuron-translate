@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { TtsCatalog } from "../src/audio/catalog.js";
+import { SpeechService } from "../src/audio/service.js";
 import { ChatService } from "../src/chat/service.js";
 import { HttpApp } from "../src/http/router.js";
 import { Logger } from "../src/observability/logger.js";
@@ -29,10 +31,23 @@ function makeApp(provider = new FakeProvider(), options: AppOptions = {}) {
     translation,
     chat,
     catalog,
+    speech: new SpeechService(fakeBinding()),
+    ttsCatalog: new TtsCatalog(),
     logger: new Logger("trans", false),
     usageClientFactory: options.usageFactory,
   });
   return { app, provider };
+}
+
+function fakeBinding(audio = "SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQxAAD") {
+  return {
+    async run(model: string) {
+      if (model.startsWith("@cf/deepgram/")) {
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mpeg" } });
+      }
+      return { audio: audio };
+    },
+  } as unknown as Ai;
 }
 
 const call = (app: HttpApp, path: string, init: RequestInit = {}) =>
@@ -290,5 +305,79 @@ describe("dashboard api", () => {
 
     expect(response.status).toBe(502);
     expect(((await response.json()) as Record<string, unknown>).configured).toBe(true);
+  });
+});
+
+describe("text to speech", () => {
+  const speechBody = { input: "Hello there", model: "@cf/myshell-ai/melotts" };
+
+  it("detects the audio container from magic bytes", async () => {
+    const { contentTypeOf } = await import("../src/audio/service.js");
+    const riff = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]).buffer;
+    const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0x04, 0, 0, 0, 0]).buffer;
+    const frame = new Uint8Array([0xff, 0xfb, 0x90, 0x00]).buffer;
+
+    expect(contentTypeOf(riff)).toBe("audio/wav");
+    expect(contentTypeOf(mp3)).toBe("audio/mpeg");
+    expect(contentTypeOf(frame)).toBe("audio/mpeg");
+  });
+
+  it("returns audio bytes with metadata headers", async () => {
+    const { app } = makeApp();
+    const response = await call(app, "/v1/audio/speech", postJson(speechBody));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("audio/mpeg");
+    expect(response.headers.get("x-tts-model")).toBe("@cf/myshell-ai/melotts");
+    expect(Number(response.headers.get("x-tts-neurons"))).toBeGreaterThan(0);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(10);
+  });
+
+  it("supports deepgram models returning a Response", async () => {
+    const { app } = makeApp();
+    const response = await call(
+      app,
+      "/v1/audio/speech",
+      postJson({ input: "Hello there", model: "aura-1" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-tts-model")).toBe("@cf/deepgram/aura-1");
+    expect((await response.arrayBuffer()).byteLength).toBe(3);
+  });
+
+  it("rejects unknown models with the list hint", async () => {
+    const { app } = makeApp();
+    const response = await call(app, "/v1/audio/speech", postJson({ input: "hi", model: "nope" }));
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(400);
+    expect((body.error as Record<string, unknown>).param).toBe("model");
+  });
+
+  it("rejects a voice the model does not have", async () => {
+    const { app } = makeApp();
+    const response = await call(
+      app,
+      "/v1/audio/speech",
+      postJson({ input: "hi", model: "aura-1", voice: "nobody" }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("requires auth", async () => {
+    const { app } = makeApp(undefined, { apiToken: "secret" });
+    expect((await call(app, "/v1/audio/speech", postJson(speechBody))).status).toBe(401);
+  });
+
+  it("lists tts models", async () => {
+    const { app } = makeApp();
+    const body = (await (await call(app, "/api/models?kind=tts")).json()) as Record<string, unknown>;
+    const ids = (body.data as Array<Record<string, unknown>>).map((entry) => entry.id);
+
+    expect(ids).toContain("@cf/myshell-ai/melotts");
+    expect(ids).toContain("@cf/deepgram/aura-2-en");
+    expect(body.default).toBe("@cf/myshell-ai/melotts");
   });
 });

@@ -1,5 +1,8 @@
 /** HTTP adapter: routing, CORS, auth, error rendering and static assets. */
 
+import { SpeechService } from "../audio/service.js";
+import { SpeechRequestParser } from "../audio/validation.js";
+import { TtsCatalog } from "../audio/catalog.js";
 import { ChatService } from "../chat/service.js";
 import { ChatRequestParser } from "../chat/validation.js";
 import { OpenAiFormatter, OpenAiStreamFormatter } from "../chat/openai.js";
@@ -22,6 +25,7 @@ const MAX_BODY_BYTES = 2_000_000;
 const JSON_TYPE = "application/json; charset=utf-8";
 const SSE_TYPE = "text/event-stream; charset=utf-8";
 const CHAT_SUFFIXES = ["/chat/completions"];
+const SPEECH_SUFFIXES = ["/audio/speech"];
 const MODELS_SUFFIXES = ["/models"];
 const API_PREFIXES = ["/api/", "/v1/", "/translate", "/healthz", "/health"];
 
@@ -36,6 +40,8 @@ export interface AppDependencies {
   translation: TranslationService;
   chat: ChatService;
   catalog: ModelCatalog;
+  speech: SpeechService;
+  ttsCatalog: TtsCatalog;
   logger: Logger;
   usageClientFactory?: () => { fetch: () => Promise<unknown> };
 }
@@ -44,12 +50,14 @@ export class HttpApp {
   private readonly guard: ApiKeyGuard;
   private readonly parser: TranslationRequestParser;
   private readonly chatParser = new ChatRequestParser();
+  private readonly speechParser: SpeechRequestParser;
   private readonly formatter = new OpenAiFormatter();
   private readonly streamFormatter = new OpenAiStreamFormatter();
 
   constructor(private readonly deps: AppDependencies) {
     this.guard = new ApiKeyGuard(deps.settings.apiToken);
     this.parser = new TranslationRequestParser(deps.settings.maxTextChars);
+    this.speechParser = new SpeechRequestParser(deps.ttsCatalog);
   }
 
   static isApiPath(pathname: string): boolean {
@@ -128,7 +136,12 @@ export class HttpApp {
 
     if (path === "/api/models") {
       this.guard.verify(request);
-      return jsonResponse(200, { request_id: requestId, ...this.modelsPayload() }, headers);
+      const kind = new URL(request.url).searchParams.get("kind");
+      const payload =
+        kind === "tts"
+          ? { default: this.deps.ttsCatalog.defaultModel.id, data: this.deps.ttsCatalog.list() }
+          : this.modelsPayload();
+      return jsonResponse(200, { request_id: requestId, ...payload }, headers);
     }
 
     if (path === "/api/usage") {
@@ -138,6 +151,11 @@ export class HttpApp {
     if (MODELS_SUFFIXES.some((suffix) => path.endsWith(suffix))) {
       if (method !== "GET") throw methodNotAllowed();
       return jsonResponse(200, this.formatter.models(this.deps.chat.listModels()), headers);
+    }
+
+    if (SPEECH_SUFFIXES.some((suffix) => path.endsWith(suffix))) {
+      if (method !== "POST") throw methodNotAllowed();
+      return await this.speech(request, requestId, headers);
     }
 
     if (CHAT_SUFFIXES.some((suffix) => path.endsWith(suffix))) {
@@ -209,6 +227,38 @@ export class HttpApp {
       },
       headers,
     );
+  }
+
+  private async speech(
+    request: Request,
+    requestId: string,
+    headers: Record<string, string>,
+  ): Promise<Response> {
+    this.guard.verify(request);
+    const payload = await readJson(request);
+    const parsed = this.speechParser.parse(payload);
+    const result = await this.deps.speech.synthesize(parsed);
+
+    this.deps.logger.info("speech.completed", {
+      request_id: requestId,
+      model: result.model,
+      characters: result.characters,
+      bytes: result.audio.byteLength,
+      estimated_neurons: result.estimatedNeurons,
+      duration_ms: result.durationMs,
+    });
+
+    return new Response(result.audio, {
+      status: 200,
+      headers: {
+        ...headers,
+        "content-type": result.contentType,
+        "cache-control": "no-store",
+        "x-tts-model": result.model,
+        "x-tts-neurons": String(result.estimatedNeurons),
+        "x-tts-duration-ms": String(result.durationMs),
+      },
+    });
   }
 
   private async chatCompletion(

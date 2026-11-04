@@ -1,5 +1,7 @@
 /** Worker entry point: wiring, static assets and the API adapter. */
 
+import { TtsCatalog } from "./audio/catalog.js";
+import { SpeechService } from "./audio/service.js";
 import { ChatService } from "./chat/service.js";
 import type { Settings } from "./config/settings.js";
 import { loadSettings, type Env } from "./config/settings.js";
@@ -25,10 +27,21 @@ function buildApp(env: Env, settings: Settings): { app: HttpApp; logger: Logger 
     maxOutputTokens: settings.maxOutputTokens,
   });
   const chat = new ChatService(provider, catalog, settings.model);
+  const speech = new SpeechService(env.AI);
+  const ttsCatalog = new TtsCatalog();
 
   return {
     logger,
-    app: new HttpApp({ settings, provider, translation, chat, catalog, logger }),
+    app: new HttpApp({
+      settings,
+      provider,
+      translation,
+      chat,
+      catalog,
+      speech,
+      ttsCatalog,
+      logger,
+    }),
   };
 }
 

@@ -22,11 +22,14 @@ const state = {
   key: localStorage.getItem(KEY_STORAGE) || "",
   session: null,
   models: null,
+  ttsModels: null,
   stats: null,
   statsError: null,
   statsLoading: false,
   setupTab: "plugin",
   draft: { text: "", target: "zh-CN", source: "auto", tone: "", model: "" },
+  ttsDraft: { text: "", model: "", voice: "", lang: "" },
+  tts: { busy: false, error: null, result: null, audioUrl: null },
   translate: { busy: false, result: null, error: null },
 };
 
@@ -94,9 +97,41 @@ async function api(path, { method = "GET", body } = {}) {
   return payload;
 }
 
+async function apiBinary(path, body) {
+  const headers = { "content-type": "application/json" };
+  if (state.key) headers.authorization = `Bearer ${state.key}`;
+  const response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
+
+  if (response.status === 401) {
+    logout("密钥已失效，请重新登录");
+    throw new Error("unauthorized");
+  }
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload?.error?.message || payload?.message || message;
+    } catch {
+      /* binary error body */
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  return {
+    blob,
+    meta: {
+      model: response.headers.get("x-tts-model"),
+      neurons: Number(response.headers.get("x-tts-neurons") ?? 0),
+      durationMs: Number(response.headers.get("x-tts-duration-ms") ?? 0),
+    },
+  };
+}
+
 /* ---------- session ---------- */
 
 function logout(message) {
+  if (state.tts.audioUrl) URL.revokeObjectURL(state.tts.audioUrl);
+  state.tts = { busy: false, error: null, result: null, audioUrl: null };
   localStorage.removeItem(KEY_STORAGE);
   state.key = "";
   state.session = null;
@@ -131,7 +166,7 @@ async function login(key) {
 
 function currentPath() {
   const hash = location.hash.replace(/^#/, "");
-  return ["/stats", "/translate", "/setup"].includes(hash) ? hash : "/stats";
+  return ["/stats", "/translate", "/speech", "/setup"].includes(hash) ? hash : "/stats";
 }
 
 function navigate(path) {
@@ -170,7 +205,12 @@ function render() {
     return;
   }
   const path = currentPath();
-  const views = { "/stats": renderStats, "/translate": renderTranslate, "/setup": renderSetup };
+  const views = {
+    "/stats": renderStats,
+    "/translate": renderTranslate,
+    "/speech": renderSpeech,
+    "/setup": renderSetup,
+  };
   renderShell(path, views[path]());
   hydrate();
 }
@@ -179,6 +219,7 @@ function hydrate() {
   const out = document.getElementById("out");
   if (out && state.translate.result) out.textContent = state.translate.result.text;
   updateCounter();
+  updateTtsCounter();
 }
 
 function updateCounter() {
@@ -258,6 +299,7 @@ function renderShell(path, content) {
   const nav = [
     ["/stats", "用量"],
     ["/translate", "翻译"],
+    ["/speech", "语音"],
     ["/setup", "接入"],
   ]
     .map(
@@ -291,13 +333,19 @@ function renderShell(path, content) {
 }
 
 async function loadModels() {
-  if (state.models) return;
   try {
-    const payload = await api("/api/models");
-    state.models = payload.data ?? [];
-    if (currentPath() === "/translate") render();
+    if (!state.models) {
+      const payload = await api("/api/models");
+      state.models = payload.data ?? [];
+    }
+    if (!state.ttsModels) {
+      const payload = await api("/api/models?kind=tts");
+      state.ttsModels = payload.data ?? [];
+    }
+    if (currentPath() === "/translate" || currentPath() === "/speech") render();
   } catch {
-    state.models = [];
+    state.models = state.models ?? [];
+    state.ttsModels = state.ttsModels ?? [];
   }
 }
 
@@ -644,6 +692,155 @@ async function runTranslate() {
   }
 }
 
+
+/* ---------- speech ---------- */
+
+function currentTtsModel() {
+  const models = state.ttsModels ?? [];
+  const selected = models.find((model) => model.id === state.ttsDraft.model);
+  return selected ?? models[0] ?? null;
+}
+
+function renderSpeech() {
+  const models = state.ttsModels ?? [];
+  const model = currentTtsModel();
+  const result = state.tts.result;
+  const error = state.tts.error;
+
+  if (!model) {
+    return `<section class="card"><h2>语音合成</h2><p class="sub">正在加载模型列表…</p></section>`;
+  }
+
+  const voiceOptions = model.voices.length
+    ? model.voices
+        .map(
+          (voice) =>
+            `<option value="${voice}" ${voice === (state.ttsDraft.voice || model.default_voice) ? "selected" : ""}>${voice}</option>`,
+        )
+        .join("")
+    : "";
+
+  const langOptions = model.languages.length
+    ? model.languages
+        .map(
+          (lang) =>
+            `<option value="${lang}" ${lang === (state.ttsDraft.lang || model.languages[0]) ? "selected" : ""}>${lang}</option>`,
+        )
+        .join("")
+    : "";
+
+  return `
+    <section class="card">
+      <h2>语音合成</h2>
+      <p class="sub">同一个接口兼容 OpenAI 的 <code>/v1/audio/speech</code>；MeloTTS 返回 WAV，Aura 系列返回 MP3。</p>
+
+      <div class="pane">
+        <div class="pane-head">
+          <h3>文本</h3>
+          <span class="spacer"></span>
+          <span class="counter" id="tts-counter">0 / 5000</span>
+        </div>
+        <textarea id="tts-src" placeholder="输入要朗读的文本…（最多 5000 字符）">${esc(state.ttsDraft.text)}</textarea>
+      </div>
+
+      <div class="controls" style="margin-top:18px">
+        <label class="field" style="flex:2">
+          <span>模型</span>
+          <select id="tts-model">
+            ${models
+              .map(
+                (entry) =>
+                  `<option value="${esc(entry.id)}" ${entry.id === model.id ? "selected" : ""}>${esc(entry.label)} · ${esc(entry.price)}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        ${
+          voiceOptions
+            ? `<label class="field"><span>音色</span><select id="tts-voice">${voiceOptions}</select></label>`
+            : ""
+        }
+        ${
+          langOptions
+            ? `<label class="field"><span>语言</span><select id="tts-lang">${langOptions}</select></label>`
+            : ""
+        }
+        <button class="btn" id="run-tts" ${state.tts.busy ? "disabled" : ""}>
+          ${state.tts.busy ? "合成中…" : "生成语音"}
+        </button>
+      </div>
+
+      <p class="sub" style="margin-top:14px">${esc(model.note)} · 约 ${fmt(model.neurons_per_1k_chars, 1)} neurons / 1k 字符</p>
+
+      ${error ? `<p class="login-error" style="margin-top:16px">${esc(error)}</p>` : ""}
+
+      ${
+        result
+          ? `<div style="margin-top:18px; display:grid; gap:12px">
+               <audio controls src="${result.audioUrl}" style="width:100%"></audio>
+               <div class="meta">
+                 <span>model <b>${esc(result.model)}</b></span>
+                 <span>字符 <b>${result.characters}</b></span>
+                 <span>音频 <b>${(result.bytes / 1024).toFixed(1)} KB</b></span>
+                 <span>估算 <b>${fmt(result.neurons, 2)} neurons</b></span>
+                 <span>耗时 <b>${fmt(result.durationMs, 0)} ms</b></span>
+                 <a href="${result.audioUrl}" download="speech.${result.format}" style="color:inherit">下载 ${result.format.toUpperCase()}</a>
+               </div>
+             </div>`
+          : ""
+      }
+    </section>
+  `;
+}
+
+async function runSpeech() {
+  const model = currentTtsModel();
+  if (!model) return;
+  const text = state.ttsDraft.text.trim();
+  if (!text) {
+    toast("先输入要朗读的文本", true);
+    return;
+  }
+
+  state.tts.busy = true;
+  state.tts.error = null;
+  render();
+  try {
+    const { blob, meta } = await apiBinary("/v1/audio/speech", {
+      model: model.id,
+      input: text,
+      voice: state.ttsDraft.voice || undefined,
+      lang: state.ttsDraft.lang || undefined,
+    });
+    if (state.tts.audioUrl) URL.revokeObjectURL(state.tts.audioUrl);
+    const format = blob.type.includes("wav") ? "wav" : blob.type.includes("ogg") ? "ogg" : "mp3";
+    state.tts.result = {
+      audioUrl: URL.createObjectURL(blob),
+      format,
+      bytes: blob.size,
+      characters: text.length,
+      model: meta.model ?? model.id,
+      neurons: meta.neurons,
+      durationMs: meta.durationMs,
+    };
+  } catch (error) {
+    state.tts.error = error.message === "unauthorized" ? "密钥已失效" : error.message;
+  } finally {
+    state.tts.busy = false;
+    render();
+    const audio = document.querySelector("audio");
+    if (audio) audio.play().catch(() => {});
+  }
+}
+
+function updateTtsCounter() {
+  const counter = document.getElementById("tts-counter");
+  const src = document.getElementById("tts-src");
+  if (!counter || !src) return;
+  counter.textContent = `${src.value.length} / 5000`;
+  counter.classList.toggle("warn", src.value.length > 5000);
+}
+
 /* ---------- setup ---------- */
 
 function setupValues() {
@@ -788,6 +985,9 @@ document.addEventListener("click", (event) => {
     case "run-translate":
       runTranslate();
       break;
+    case "run-tts":
+      runSpeech();
+      break;
     case "copy-out": {
       const out = document.getElementById("out");
       if (out && state.translate.result) copy(out.textContent);
@@ -801,7 +1001,13 @@ document.addEventListener("input", (event) => {
   if (id === "src") {
     state.draft.text = value;
     updateCounter();
-  } else if (id === "model") state.draft.model = value;
+  } else if (id === "tts-src") {
+    state.ttsDraft.text = value;
+    updateTtsCounter();
+  } else if (id === "tts-model") state.ttsDraft.model = value;
+  else if (id === "tts-voice") state.ttsDraft.voice = value;
+  else if (id === "tts-lang") state.ttsDraft.lang = value;
+  else if (id === "model") state.draft.model = value;
   else if (id === "target") state.draft.target = value;
   else if (id === "source") state.draft.source = value;
   else if (id === "tone") state.draft.tone = value;
@@ -809,7 +1015,10 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("change", (event) => {
   const { id, value } = event.target;
-  if (id === "model") state.draft.model = value;
+  if (id === "tts-model" || id === "tts-voice" || id === "tts-lang") {
+    state.ttsDraft[id === "tts-model" ? "model" : id === "tts-voice" ? "voice" : "lang"] = value;
+    render();
+  } else if (id === "model") state.draft.model = value;
   else if (id === "target") state.draft.target = value;
   else if (id === "source") state.draft.source = value;
 });
