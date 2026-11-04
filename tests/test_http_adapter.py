@@ -460,3 +460,28 @@ def test_usage_endpoint_surfaces_upstream_failure() -> None:
     assert response.status == 502
     assert response.body["configured"] is True
     assert "boom" in response.body["message"]
+
+
+def test_models_endpoint_lists_catalog() -> None:
+    adapter, _ = make_adapter()
+    response = call(
+        adapter,
+        FakeRequest(
+            method="GET",
+            url="https://x.dev/api/models",
+            headers=FakeHeaders({"authorization": "Bearer"}),
+        ),
+    )
+
+    assert response.status == 200
+    assert response.body["default"] == Settings().model
+    ids = [option["id"] for option in response.body["data"]]
+    assert "@cf/zai-org/glm-4.7-flash" in ids
+    assert all(model_id.startswith("@cf/") for model_id in ids)
+
+
+def test_models_endpoint_requires_token() -> None:
+    adapter, _ = make_adapter(api_token="secret")
+    response = call(adapter, FakeRequest(method="GET", url="https://x.dev/api/models"))
+
+    assert response.status == 401

@@ -94,3 +94,18 @@ def test_keeps_typed_api_errors_and_marks_chunk() -> None:
         run(make_service(provider).translate(TranslationRequest("Hi", "de"), request_id="r"))
     assert error.value.code == "nope"
     assert error.value.field == "chunks[0]"
+
+
+def test_per_request_model_override_is_used() -> None:
+    provider = FakeProvider()
+    service = make_service(provider)
+
+    result = run(
+        service.translate(
+            TranslationRequest("Hello", "zh", model="@cf/zai-org/glm-4.7-flash"),
+            request_id="r-model",
+        )
+    )
+
+    assert result.model == "@cf/zai-org/glm-4.7-flash"
+    assert provider.calls[0]["model"] == "@cf/zai-org/glm-4.7-flash"

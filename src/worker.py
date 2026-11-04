@@ -11,6 +11,7 @@ from chat_app import ChatApp
 from chat_service import ChatService
 from chunking import TextChunker
 from http_adapter import HttpAdapter, HttpResponse
+from model_catalog import ModelCatalog
 from observability import JsonLogger
 from prompting import PromptBuilder
 from settings import Settings
@@ -44,12 +45,14 @@ class Default(WorkerEntrypoint):
             PromptBuilder(),
             TextChunker(settings.chunk_chars),
             max_concurrency=settings.max_concurrency,
+            max_output_tokens=settings.max_output_tokens,
         )
-        chat_service = ChatService(provider, default_model=settings.model)
+        catalog = ModelCatalog(settings.model)
+        chat_service = ChatService(provider, default_model=settings.model, catalog=catalog)
 
         return HttpAdapter(
             settings,
-            TranslationApp(settings, translation_service, logger),
+            TranslationApp(settings, translation_service, logger, catalog=catalog),
             ChatApp(chat_service, logger),
             logger,
         )

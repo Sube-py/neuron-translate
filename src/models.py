@@ -14,6 +14,7 @@ class TranslationRequest:
     tone: str | None = None
     glossary: Mapping[str, str] = field(default_factory=dict)
     preserve_formatting: bool = True
+    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

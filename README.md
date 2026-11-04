@@ -61,7 +61,7 @@ curl -s localhost:8787/translate \
   "request_id": "a1b2c3d4e5f6",
   "translation": "Cloudflare Workers AI 很快。",
   "meta": {
-    "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "model": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
     "gateway": "default",
     "chunks": 1,
     "cached_chunks": 0,
@@ -111,7 +111,7 @@ curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_I
 | --- | --- |
 | Base URL | `https://trans.example.com/v1` |
 | API Key | 配了 `TRANSLATION_API_TOKEN` 就填它；没配则任意字符串（如 `sk-local`） |
-| Model | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
+| Model | `@cf/meta/llama-3.1-8b-instruct-fp8-fast`（也可填 70B / GLM / Qwen3 等，见 `/api/models`） |
 
 - 模型名无所谓：非 `@cf/` 开头的一律映射到默认模型（所以填 `gpt-4o-mini`、`gpt-3.5-turbo` 也能用）；`@cf/` 开头的会原样透传
 - 请求里的 `messages` 原样转给模型，插件自带的 system prompt 会生效
@@ -144,7 +144,7 @@ curl -s https://trans.example.com/v1/models
 
 | 客户端 | 填法 |
 | --- | --- |
-| 沉浸式翻译 | 设置 → 翻译服务 → 添加 → OpenAI（ChatGPT）：API Key 填 `TRANSLATION_API_TOKEN`；自定义 API 地址填 `https://<你的域名>/v1/chat/completions`；模型填 `@cf/meta/llama-3.3-70b-instruct-fp8-fast`；保持「流式输出」开启 |
+| 沉浸式翻译 | 设置 → 翻译服务 → 添加 → OpenAI（ChatGPT）：API Key 填 `TRANSLATION_API_TOKEN`；自定义 API 地址填 `https://<你的域名>/v1/chat/completions`；模型填 `@cf/meta/llama-3.1-8b-instruct-fp8-fast`；保持「流式输出」开启 |
 | NextChat / Cherry Studio | 自定义 OpenAI：Base URL `https://trans.example.com/v1`，模型自定义填上面的模型名 |
 | Bob / Pot 等 macOS 工具 | OpenAI 兼容 → API 域名 `trans.example.com`，路径 `/v1/chat/completions` |
 | 代码里用 openai SDK | `OpenAI(base_url="https://trans.example.com/v1", api_key="sk-local")` |
@@ -167,7 +167,10 @@ UI 内部用的两个接口（同样走 Bearer 鉴权）：
 | 接口 | 用途 |
 | --- | --- |
 | `GET /api/verify` | 校验 Key 并返回模型、网关与各项限制 |
+| `GET /api/models` | 可用模型清单（含 reasoning 标记与推荐说明） |
 | `GET /api/usage?days=7` | 今日/近 7 天 neurons 用量、剩余额度、按模型拆分 |
+
+**关于 reasoning 模型**（`glm-4.7-flash` / `gemma-4-26b` / `qwen3` / `gpt-oss`）：它们先输出思考再给正文。`/v1/*` 不传 `max_tokens` 时不会下发这个字段，模型按自身默认生成，思考再长也能完成；`/translate` 则沿用 `TRANSLATION_MAX_OUTPUT_TOKENS`（默认 2048）。如果思考吃光预算，会返回 `reasoning_budget_exhausted` 而不是空译文。
 
 写入 / 轮换 token：
 
@@ -188,6 +191,7 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 | `tone` | string | ➖ | 语气要求，如 `formal`、`casual`、`marketing` |
 | `glossary` | object | ➖ | 术语表 `{"workers": "无服务器"}`，最多 50 条 |
 | `preserve_formatting` | bool | ➖ | 默认 `true`，保留 Markdown / HTML / 占位符 |
+| `model` | string | ➖ | 覆盖默认模型，支持 `@cf/meta/...` 全名或 `glm-4.7-flash` 这类短名（见 `GET /api/models`） |
 
 鉴权（配置了 `TRANSLATION_API_TOKEN` 时必填）：`Authorization: Bearer <token>` 或 `X-API-Key: <token>`。
 
@@ -203,7 +207,7 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `TRANSLATION_MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | 任意 Workers AI 模型；也可用第三方模型，见下 |
+| `TRANSLATION_MODEL` | `@cf/meta/llama-3.1-8b-instruct-fp8-fast` | 任意 Workers AI 模型；也可用第三方模型，见下 |
 | `AI_GATEWAY_ID` | `default` | AI Gateway 名称，`default` 首次请求时自动创建 |
 | `AI_GATEWAY_CACHE_TTL` | `0` | >0 时按内容哈希复用 AI Gateway 缓存（秒） |
 | `AI_GATEWAY_COLLECT_LOGS` | `true` | 是否写 AI Gateway 日志（含请求/响应正文） |
@@ -211,10 +215,11 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 | `TRANSLATION_MAX_TEXT_CHARS` | `20000` | 单请求原文上限 |
 | `TRANSLATION_MAX_CONCURRENCY` | `4` | 分片并发数（1–8） |
 | `TRANSLATION_TEMPERATURE` | `0.1` | 采样温度 |
-| `TRANSLATION_MAX_OUTPUT_TOKENS` | `2048` | 单分片输出上限 |
+| `TRANSLATION_MAX_OUTPUT_TOKENS` | `2048` | `/translate` 单分片输出上限（`/v1/*` 不传就是模型默认，不限） |
 | `CORS_ALLOWED_ORIGINS` | `*` | 逗号分隔的白名单 |
 
-> `llama-3.1-8b-instruct` 已于 2026-05-30 下线，默认模型换成 `llama-3.3-70b-instruct-fp8-fast`（实测可用）。
+> **默认模型**：`llama-3.1-8b-instruct-fp8-fast`（快、约 9,000 次/天）；要质量就换 `llama-3.3-70b-instruct-fp8-fast`。
+> `llama-3.1-8b-instruct`（非 fp8-fast）已于 2026-05-30 下线。
 > 带 reasoning 的模型（`qwen3-30b-a3b-fp8`、`gpt-oss-120b`）会先输出思考内容、正文可能为空，用作纯翻译需额外关掉 thinking，暂不建议。
 >
 > 若想用 OpenAI / Anthropic 等第三方模型，直接把 `TRANSLATION_MODEL` 设为 `openai/gpt-4.1-mini` 之类的 ID（需开启 AI Gateway Unified Billing）；代码无需改动。
@@ -269,7 +274,7 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 每个请求一行 JSON，`wrangler tail` 直接可读可 grep：
 
 ```json
-{"service":"trans","level":"info","event":"translation.completed","request_id":"…","model":"@cf/meta/llama-3.3-70b-instruct-fp8-fast","gateway":"default","chunks":1,"input_chars":28,"duration_ms":780,"tokens":{"prompt":132,"completion":24,"total":156}}
+{"service":"trans","level":"info","event":"translation.completed","request_id":"…","model":"@cf/meta/llama-3.1-8b-instruct-fp8-fast","gateway":"default","chunks":1,"input_chars":28,"duration_ms":780,"tokens":{"prompt":132,"completion":24,"total":156}}
 ```
 
 失败路径会打 `request.failed`（含 code/status），未捕获异常打 `request.crashed`。
@@ -289,7 +294,7 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 | 页面 | 说明 |
 | --- | --- |
 | `#/stats`（默认） | 今日 neurons 用量环、剩余额度、请求数/tokens、近 7 天柱状图、按模型拆分 |
-| `#/translate` | 源文/译文双栏，语言与语气选择，⌘/Ctrl+Enter 提交，带模型/tokens/耗时/request id |
+| `#/translate` | 源文/译文双栏，**模型选择**（含 reasoning 标记）、语言与语气，⌘/Ctrl+Enter 提交，带模型/tokens/耗时/request id |
 | `#/setup` | 沉浸式翻译、OpenAI SDK、curl 三套接入片段 + 一键复制 |
 | `#/limits` | 并入接入页「限制」标签：字符上限、分片并发、网关、统计是否开启 |
 

@@ -68,3 +68,21 @@ def test_rejects_too_many_glossary_entries() -> None:
 def test_rejects_non_boolean_flag() -> None:
     with pytest.raises(ValidationError):
         TranslationRequestParser().parse({"text": "hi", "preserve_formatting": "yes"})
+
+
+def test_parses_model_override() -> None:
+    request = TranslationRequestParser().parse(
+        {"text": "hi", "model": " @cf/zai-org/glm-4.7-flash "}
+    )
+
+    assert request.model == "@cf/zai-org/glm-4.7-flash"
+
+
+def test_rejects_non_string_model() -> None:
+    with pytest.raises(ValidationError) as error:
+        TranslationRequestParser().parse({"text": "hi", "model": 42})
+    assert error.value.field == "model"
+
+
+def test_ignores_blank_model() -> None:
+    assert TranslationRequestParser().parse({"text": "hi", "model": "  "}).model is None

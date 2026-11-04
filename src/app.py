@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
+from model_catalog import ModelCatalog
 from observability import JsonLogger
 from settings import Settings
 from translator import TranslationService
@@ -20,16 +22,20 @@ class TranslationApp:
         service: TranslationService,
         logger: JsonLogger | None = None,
         parser: TranslationRequestParser | None = None,
+        catalog: ModelCatalog | None = None,
     ) -> None:
         self._settings = settings
         self._service = service
         self._logger = logger or JsonLogger()
         self._parser = parser or TranslationRequestParser(settings.max_text_chars)
+        self._catalog = catalog or ModelCatalog(settings.model)
 
     async def translate(
         self, payload: Mapping[str, Any] | None, *, request_id: str
     ) -> dict[str, Any]:
         request = self._parser.parse(payload)
+        if request.model:
+            request = replace(request, model=self._catalog.resolve(request.model))
         result = await self._service.translate(request, request_id=request_id)
         self._logger.info(
             "translation.completed",
@@ -49,6 +55,12 @@ class TranslationApp:
             "request_id": request_id,
             "translation": result.text,
             "meta": result.to_payload(),
+        }
+
+    def models(self) -> dict[str, Any]:
+        return {
+            "default": self._settings.model,
+            "data": self._catalog.options(),
         }
 
     def health(self) -> dict[str, Any]:

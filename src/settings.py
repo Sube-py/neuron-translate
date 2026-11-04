@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast"
 DEFAULT_GATEWAY = "default"
 _EMPTY_VALUES = {"", "undefined", "null", "none"}
 

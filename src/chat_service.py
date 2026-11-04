@@ -8,6 +8,7 @@ import time
 
 from chat_models import ChatMessage, ChatOutcome, ChatRequest, ChatResult
 from errors import ApiError, ProviderError
+from model_catalog import ModelCatalog
 from provider import ChatProvider
 from settings import DEFAULT_MODEL
 
@@ -20,9 +21,16 @@ class ChatService:
     ``glossary`` additions are appended as extra system rules.
     """
 
-    def __init__(self, provider: ChatProvider, *, default_model: str = DEFAULT_MODEL) -> None:
+    def __init__(
+        self,
+        provider: ChatProvider,
+        *,
+        default_model: str = DEFAULT_MODEL,
+        catalog: ModelCatalog | None = None,
+    ) -> None:
         self._provider = provider
         self._default_model = default_model
+        self._catalog = catalog or ModelCatalog(default_model)
 
     @property
     def model(self) -> str:
@@ -37,7 +45,12 @@ class ChatService:
     def resolve_model(self, request: ChatRequest) -> str:
         """Map whatever model id the client sent onto a Workers AI model."""
         requested = request.model
-        if requested and requested.startswith("@cf/"):
+        if not requested:
+            return self._default_model
+        resolved = self._catalog.resolve(requested)
+        if resolved and resolved != requested and resolved.startswith("@cf/"):
+            return resolved
+        if requested.startswith("@cf/"):
             return requested
         return self._default_model
 

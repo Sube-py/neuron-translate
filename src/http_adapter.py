@@ -190,6 +190,9 @@ class HttpAdapter:
         if path == "/api/verify":
             return await self._session(request, request_id=request_id, headers=headers)
 
+        if path == "/api/models":
+            return await self._models(request, request_id=request_id, headers=headers)
+
         if path == "/api/usage":
             return await self._usage(request, request_id=request_id, headers=headers)
 
@@ -262,6 +265,18 @@ class HttpAdapter:
                     "gateway_cache_ttl": settings.gateway_cache_ttl,
                 },
             },
+            headers=headers,
+        )
+
+    async def _models(
+        self, request: Any, *, request_id: str, headers: dict[str, str]
+    ) -> HttpResponse:
+        self._guard.verify(
+            self._header(request, "authorization"), self._header(request, "x-api-key")
+        )
+        return HttpResponse(
+            status=200,
+            body={"request_id": request_id, **self._app.models()},
             headers=headers,
         )
 

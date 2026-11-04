@@ -37,7 +37,7 @@ class WorkersAiProvider(ChatProvider):
         gateway_id: str,
         *,
         temperature: float = 0.1,
-        max_output_tokens: int = 2048,
+        max_output_tokens: int | None = 2048,
         cache_ttl: int = 0,
         collect_logs: bool = True,
         parser: WorkersAiResponseParser | None = None,
@@ -78,11 +78,13 @@ class WorkersAiProvider(ChatProvider):
         model: str | None = None,
     ) -> Completion:
         model_id = model or self.model
-        inputs = {
+        resolved_max_tokens = self._max_output_tokens if max_tokens is None else max_tokens
+        inputs: dict[str, Any] = {
             "messages": [dict(message) for message in messages],
             "temperature": self._temperature if temperature is None else temperature,
-            "max_tokens": self._max_output_tokens if max_tokens is None else max_tokens,
         }
+        if resolved_max_tokens is not None:
+            inputs["max_tokens"] = resolved_max_tokens
 
         try:
             raw = await self._binding.run(

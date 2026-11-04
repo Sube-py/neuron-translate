@@ -167,3 +167,20 @@ def test_reasoning_only_response_reports_budget_exhausted() -> None:
         asyncio.run(make_provider(binding).complete(MESSAGES))
     assert error.value.code == "reasoning_budget_exhausted"
     assert "max_tokens" in error.value.message
+
+
+def test_max_tokens_is_omitted_when_not_configured() -> None:
+    binding = FakeBinding({"response": "ok"})
+    provider = make_provider(binding, max_output_tokens=None)
+
+    asyncio.run(provider.complete(MESSAGES))
+
+    assert "max_tokens" not in binding.calls[0][1]
+
+
+def test_max_tokens_can_be_overridden_per_call() -> None:
+    binding = FakeBinding({"response": "ok"})
+
+    asyncio.run(make_provider(binding).complete(MESSAGES, max_tokens=4096))
+
+    assert binding.calls[0][1]["max_tokens"] == 4096

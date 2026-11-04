@@ -33,7 +33,21 @@ class TranslationRequestParser:
             tone=self._tone(payload),
             glossary=self._glossary(payload),
             preserve_formatting=self._bool(payload, "preserve_formatting", default=True),
+            model=self._model(payload),
         )
+
+    def _model(self, payload: Mapping[str, object]) -> str | None:
+        raw = payload.get("model")
+        if raw is None:
+            return None
+        if not isinstance(raw, str):
+            raise ValidationError("Field 'model' must be a string.", field="model")
+        candidate = raw.strip()
+        if not candidate:
+            return None
+        if len(candidate) > 120:
+            raise ValidationError("Field 'model' is too long.", field="model")
+        return candidate
 
     def _text(self, payload: Mapping[str, object]) -> str:
         raw = payload.get("text")

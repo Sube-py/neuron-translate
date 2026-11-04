@@ -21,11 +21,12 @@ const LANGS = [
 const state = {
   key: localStorage.getItem(KEY_STORAGE) || "",
   session: null,
+  models: null,
   stats: null,
   statsError: null,
   statsLoading: false,
   setupTab: "plugin",
-  draft: { text: "", target: "zh-CN", source: "auto", tone: "" },
+  draft: { text: "", target: "zh-CN", source: "auto", tone: "", model: "" },
   translate: { busy: false, result: null, error: null },
 };
 
@@ -116,6 +117,8 @@ async function login(key) {
     localStorage.setItem(KEY_STORAGE, trimmed);
     state.session = session;
     state.stats = null;
+    state.models = null;
+    loadModels();
     navigate("/stats");
     toast("登录成功");
   } catch (error) {
@@ -150,6 +153,7 @@ async function bootstrap() {
   }
   try {
     state.session = await api("/api/verify");
+    loadModels();
     render();
   } catch (error) {
     state.key = "";
@@ -284,6 +288,17 @@ function renderShell(path, content) {
   `;
 
   document.getElementById("logout-btn").addEventListener("click", () => logout());
+}
+
+async function loadModels() {
+  if (state.models) return;
+  try {
+    const payload = await api("/api/models");
+    state.models = payload.data ?? [];
+    if (currentPath() === "/translate") render();
+  } catch {
+    state.models = [];
+  }
 }
 
 /* ---------- stats ---------- */
@@ -499,6 +514,21 @@ async function loadStats() {
 
 /* ---------- translate ---------- */
 
+function modelOptions(selected) {
+  const fallback = state.session?.model ?? "";
+  const options = [
+    `<option value="" ${selected ? "" : "selected"}>默认 · ${esc(fallback)}</option>`,
+  ];
+  for (const model of state.models ?? []) {
+    const label = `${model.label}${model.reasoning ? " · reasoning" : ""}`;
+    const isSelected = selected === model.id ? "selected" : "";
+    options.push(
+      `<option value="${esc(model.id)}" ${isSelected} title="${esc(model.note)}">${esc(label)}</option>`,
+    );
+  }
+  return options.join("");
+}
+
 function renderTranslate() {
   const result = state.translate.result;
   const error = state.translate.error;
@@ -527,6 +557,10 @@ function renderTranslate() {
       </div>
 
       <div class="controls" style="margin-top:18px">
+        <label class="field">
+          <span>模型</span>
+          <select id="model">${modelOptions(draft.model)}</select>
+        </label>
         <label class="field">
           <span>目标语言</span>
           <select id="target">${LANGS.map(
@@ -580,7 +614,7 @@ function translateMeta(payload) {
 }
 
 async function runTranslate() {
-  const { text, target, source, tone } = state.draft;
+  const { text, target, source, tone, model } = state.draft;
   if (!text.trim()) {
     toast("先输入要翻译的内容", true);
     return;
@@ -597,6 +631,7 @@ async function runTranslate() {
         target_lang: target,
         source_lang: source,
         tone: tone || undefined,
+        model: model || undefined,
       },
     });
     state.translate.result = translateMeta(payload);
@@ -765,7 +800,7 @@ document.addEventListener("input", (event) => {
   if (id === "src") {
     state.draft.text = value;
     updateCounter();
-  }
+  } else if (id === "model") state.draft.model = value;
   else if (id === "target") state.draft.target = value;
   else if (id === "source") state.draft.source = value;
   else if (id === "tone") state.draft.tone = value;
@@ -773,7 +808,8 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("change", (event) => {
   const { id, value } = event.target;
-  if (id === "target") state.draft.target = value;
+  if (id === "model") state.draft.model = value;
+  else if (id === "target") state.draft.target = value;
   else if (id === "source") state.draft.source = value;
 });
 

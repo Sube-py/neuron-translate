@@ -24,14 +24,17 @@ class TranslationService:
         chunker: TextChunker | None = None,
         *,
         max_concurrency: int = 4,
+        max_output_tokens: int | None = None,
     ) -> None:
         self._provider = provider
         self._prompts = prompt_builder or PromptBuilder()
         self._chunker = chunker or TextChunker()
         self._max_concurrency = max(1, max_concurrency)
+        self._max_output_tokens = max_output_tokens
 
     async def translate(self, request: TranslationRequest, *, request_id: str) -> TranslationResult:
         started = time.monotonic()
+        model = request.model or self._provider.model
         chunks = self._chunker.split(request.text)
         system_prompt = self._prompts.system_prompt(request)
 
@@ -46,8 +49,9 @@ class TranslationService:
                 return await self._complete(
                     messages,
                     metadata=self._metadata(request, request_id, index, len(chunks), chunk),
-                    cache_key=self._cache_key(request, system_prompt, chunk.text),
+                    cache_key=self._cache_key(request, system_prompt, chunk.text, model),
                     index=index,
+                    model=model,
                 )
 
         completions = await asyncio.gather(
@@ -67,7 +71,7 @@ class TranslationService:
             text=text.strip(),
             chunk_count=len(chunks),
             cached_chunks=sum(1 for completion in completions if completion.cached),
-            model=self._provider.model,
+            model=model,
             gateway_id=getattr(self._provider, "gateway_id", "default"),
             usage=usage,
             duration_ms=int((time.monotonic() - started) * 1000),
@@ -80,9 +84,16 @@ class TranslationService:
         metadata: Metadata,
         cache_key: str,
         index: int,
+        model: str,
     ) -> Completion:
         try:
-            return await self._provider.complete(messages, metadata=metadata, cache_key=cache_key)
+            return await self._provider.complete(
+                messages,
+                metadata=metadata,
+                cache_key=cache_key,
+                model=model,
+                max_tokens=self._max_output_tokens,
+            )
         except ApiError as exc:
             exc.field = exc.field or f"chunks[{index}]"
             raise
@@ -108,10 +119,12 @@ class TranslationService:
             "chars": len(chunk.text),
         }
 
-    def _cache_key(self, request: TranslationRequest, system_prompt: str, text: str) -> str:
+    def _cache_key(
+        self, request: TranslationRequest, system_prompt: str, text: str, model: str
+    ) -> str:
         fingerprint = json.dumps(
             {
-                "model": self._provider.model,
+                "model": model,
                 "system": system_prompt,
                 "text": text,
                 "target_lang": request.target_lang,
