@@ -300,8 +300,9 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 3. 写入 secret（无需重新部署）：
 
 ```bash
-printf '%s' <account_id>  | npx wrangler secret put ANALYTICS_ACCOUNT_ID
-printf '%s' <api_token>   | npx wrangler secret put ANALYTICS_API_TOKEN
+# 在项目根目录执行；不在的话加 --name trans 指定 Worker
+printf '%s' <account_id>  | npx wrangler secret put ANALYTICS_ACCOUNT_ID --name trans
+printf '%s' <api_token>   | npx wrangler secret put ANALYTICS_API_TOKEN --name trans
 ```
 
 没配置时用量页会把这个步骤直接显示出来，不影响翻译功能。

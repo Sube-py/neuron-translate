@@ -207,8 +207,8 @@ class MissingUsageConfiguration:
         "secrets": ["ANALYTICS_ACCOUNT_ID", "ANALYTICS_API_TOKEN"],
         "permission": "Account → Account Analytics → Read",
         "commands": [
-            "printf '%s' <account_id> | npx wrangler secret put ANALYTICS_ACCOUNT_ID",
-            "printf '%s' <api_token> | npx wrangler secret put ANALYTICS_API_TOKEN",
+            "printf '%s' <account_id> | npx wrangler secret put ANALYTICS_ACCOUNT_ID --name trans",
+            "printf '%s' <api_token>  | npx wrangler secret put ANALYTICS_API_TOKEN --name trans",
         ],
     }
 
