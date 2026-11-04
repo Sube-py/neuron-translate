@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,12 +16,16 @@ from errors import ApiError, AuthError, NotFoundError, PayloadTooLargeError, Val
 from jsbridge import to_py
 from observability import JsonLogger
 from openai_format import OpenAiFormatter
-from playground import render_playground
 from settings import Settings
+from usage import (
+    FREE_NEURONS_PER_DAY,
+    MissingUsageConfiguration,
+    UsageClient,
+    UsageUnavailable,
+)
 
 MAX_BODY_BYTES = 2_000_000
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
-HTML_CONTENT_TYPE = "text/html; charset=utf-8"
 SSE_CONTENT_TYPE = "text/event-stream; charset=utf-8"
 CHAT_SUFFIXES = ("/chat/completions",)
 MODELS_SUFFIXES = ("/models",)
@@ -94,6 +98,7 @@ class HttpAdapter:
         chat_app: ChatApp,
         logger: JsonLogger | None = None,
         formatter: OpenAiFormatter | None = None,
+        usage_client_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._settings = settings
         self._app = app
@@ -102,6 +107,7 @@ class HttpAdapter:
         self._cors = CorsPolicy(settings.allowed_origins)
         self._guard = ApiKeyGuard(settings.api_token)
         self._formatter = formatter or OpenAiFormatter()
+        self._usage_client_factory = usage_client_factory
 
     async def handle(self, request: Any) -> HttpResponse:
         started = time.monotonic()
@@ -178,18 +184,14 @@ class HttpAdapter:
         if method == "OPTIONS":
             return HttpResponse(status=204, headers=headers)
 
-        if method == "GET" and path in {"/", "/playground"}:
-            if not self._settings.playground_enabled:
-                raise NotFoundError("Not found.")
-            return HttpResponse(
-                status=200,
-                body=render_playground(),
-                headers=headers,
-                content_type=HTML_CONTENT_TYPE,
-            )
-
         if method == "GET" and path in {"/health", "/healthz"}:
             return HttpResponse(status=200, body=self._app.health(), headers=headers)
+
+        if path == "/api/verify":
+            return await self._session(request, request_id=request_id, headers=headers)
+
+        if path == "/api/usage":
+            return await self._usage(request, request_id=request_id, headers=headers)
 
         if any(path.endswith(suffix) for suffix in MODELS_SUFFIXES):
             if method != "GET":
@@ -234,6 +236,81 @@ class HttpAdapter:
         if path.startswith(OPENAI_PREFIXES):
             return self._formatter.error(error, request_id=request_id)
         return {"request_id": request_id, **error.to_payload()}
+
+    async def _session(
+        self, request: Any, *, request_id: str, headers: dict[str, str]
+    ) -> HttpResponse:
+        self._guard.verify(
+            self._header(request, "authorization"), self._header(request, "x-api-key")
+        )
+        settings = self._settings
+        return HttpResponse(
+            status=200,
+            body={
+                "ok": True,
+                "request_id": request_id,
+                "model": settings.model,
+                "gateway": settings.gateway_id,
+                "limits": {
+                    "max_text_chars": settings.max_text_chars,
+                    "chunk_chars": settings.chunk_chars,
+                    "max_concurrency": settings.max_concurrency,
+                    "max_output_tokens": settings.max_output_tokens,
+                },
+                "features": {
+                    "usage_analytics": settings.usage_configured,
+                    "gateway_cache_ttl": settings.gateway_cache_ttl,
+                },
+            },
+            headers=headers,
+        )
+
+    async def _usage(
+        self, request: Any, *, request_id: str, headers: dict[str, str]
+    ) -> HttpResponse:
+        self._guard.verify(
+            self._header(request, "authorization"), self._header(request, "x-api-key")
+        )
+        client = self._build_usage_client()
+        try:
+            report = await client.fetch()
+        except UsageUnavailable as exc:
+            not_configured = isinstance(client, MissingUsageConfiguration)
+            self._logger.warning(
+                "usage.unavailable",
+                request_id=request_id,
+                configured=not not_configured,
+                message=str(exc),
+            )
+            body: dict[str, Any] = {
+                "configured": not not_configured,
+                "free_neurons_per_day": FREE_NEURONS_PER_DAY,
+                "message": str(exc),
+            }
+            if not_configured:
+                body["setup"] = MissingUsageConfiguration.setup
+            return HttpResponse(status=200 if not_configured else 502, body=body, headers=headers)
+
+        payload = {"configured": True, **report.to_payload()}
+        self._logger.info(
+            "usage.reported",
+            request_id=request_id,
+            today_neurons=payload["today"]["neurons"],
+            today_percent=payload["today"]["percent"],
+        )
+        return HttpResponse(status=200, body=payload, headers=headers)
+
+    def _build_usage_client(self) -> Any:
+        if self._usage_client_factory is not None:
+            return self._usage_client_factory()
+        settings = self._settings
+        if not settings.usage_configured:
+            return MissingUsageConfiguration()
+        return UsageClient(
+            settings.analytics_account_id or "",
+            settings.analytics_token or "",
+            days=settings.usage_days,
+        )
 
     async def _chat(
         self, request: Any, *, request_id: str, headers: dict[str, str]

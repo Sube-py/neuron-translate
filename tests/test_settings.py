@@ -23,6 +23,7 @@ def test_defaults_without_env() -> None:
     assert settings.gateway_cache_ttl == 0
     assert settings.max_concurrency == 4
     assert settings.allowed_origins == ("*",)
+    assert settings.usage_configured is False
 
 
 def test_reads_vars_from_attribute_style_env() -> None:
@@ -33,7 +34,9 @@ def test_reads_vars_from_attribute_style_env() -> None:
         TRANSLATION_CHUNK_CHARS="1200",
         TRANSLATION_MAX_CONCURRENCY="99",
         CORS_ALLOWED_ORIGINS="https://a.dev, https://b.dev",
-        PLAYGROUND_ENABLED="false",
+        USAGE_DAYS="5",
+        ANALYTICS_ACCOUNT_ID="acc-1",
+        ANALYTICS_API_TOKEN="tok-1",
         TRANSLATION_API_TOKEN="s3cret",
     )
 
@@ -45,7 +48,8 @@ def test_reads_vars_from_attribute_style_env() -> None:
     assert settings.chunk_chars == 1200
     assert settings.max_concurrency == 8
     assert settings.allowed_origins == ("https://a.dev", "https://b.dev")
-    assert settings.playground_enabled is False
+    assert settings.usage_days == 5
+    assert settings.usage_configured is True
     assert settings.api_token == "s3cret"
 
 

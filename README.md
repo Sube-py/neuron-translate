@@ -8,7 +8,7 @@ Cloudflare Workers 上的翻译服务：**Python Worker + Workers AI + AI Gatewa
 - `POST /translate`：自用的翻译接口，内建分片、术语表（glossary）、语气（tone）
 - 所有模型调用都经过 **AI Gateway**：统一日志、可选响应缓存、自定义 metadata（可按请求 ID 检索）
 - **Workers Traces** 自动采集 handler / binding 调用的 span，可导出到任意 OTel 后端
-- `GET /` 自带一个浏览器调试页，`GET /healthz` 用于健康检查
+- `GET /` 是一个 Web 控制台（登录 → 用量面板 / 翻译面板 / 接入指引），`GET /healthz` 用于健康检查
 
 > 从 `worker.py` 到 `provider`、`translator`、`http_adapter` 每一层都只依赖抽象，方便替换模型或换个入口（HTTP、队列、Cron）。
 
@@ -18,6 +18,9 @@ Cloudflare Workers 上的翻译服务：**Python Worker + Workers AI + AI Gatewa
 
 ```
 wrangler.jsonc           # Worker 配置：AI binding、observability.traces、运行参数
+web/                     # 静态 SPA：登录页、用量面板、翻译面板、接入指引
+web/app.js               # 单文件前端（vanilla ESM，无构建步骤）
+web/styles.css           # 暗色玻璃拟态样式，含登录页动效
 src/worker.py            # WorkerEntrypoint：装配依赖，转成 Workers Response
 src/http_adapter.py      # 路由 / CORS / 鉴权 / 错误渲染（与运行时无关，可单测）
 src/app.py               # 用例层：校验 → 翻译 → 打点
@@ -25,6 +28,7 @@ src/translator.py        # 分片、并发、AI Gateway metadata、缓存 key、
 src/chat_validation.py   # OpenAI 请求体校验（messages / stream / 温度 / max_tokens）
 src/chat_service.py      # OpenAI → Workers AI 转发、模型名映射
 src/openai_format.py     # OpenAI 响应体 / SSE 帧 / 错误体 / models 列表
+src/usage.py             # 用量统计：Cloudflare GraphQL Analytics → 每日/按模型聚合
 src/chunking.py          # 按段落/句子切分长文，拼接时可还原原文结构
 src/prompting.py         # 翻译 prompt、语言名称映射
 src/worker_ai.py         # Workers AI provider（env.AI + AI Gateway options）
@@ -81,7 +85,7 @@ uv run pywrangler secret put TRANSLATION_API_TOKEN   # 可选，开启鉴权
 | OpenAI 兼容 Base URL | `https://<worker>.<subdomain>.workers.dev/v1` |
 | OpenAI 兼容完整路径 | `.../v1/chat/completions` |
 | 自用翻译接口 | `.../translate` |
-| 浏览器调试页 | `.../` |
+| Web 控制台 | `.../` |
 
 ### 绑定自定义域（可选）
 
@@ -156,7 +160,14 @@ Authorization: Bearer <TRANSLATION_API_TOKEN>
 # 或 X-API-Key: <TRANSLATION_API_TOKEN>
 ```
 
-`/healthz`、`/v1/models`、`/` 不需要鉴权（都不消耗 Workers AI 额度，模型列表只暴露模型 id）。
+`/healthz`、`/v1/models`、`/`、静态资源不需要鉴权（都不消耗 Workers AI 额度，模型列表只暴露模型 id）。
+
+UI 内部用的两个接口（同样走 Bearer 鉴权）：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/verify` | 校验 Key 并返回模型、网关与各项限制 |
+| `GET /api/usage?days=7` | 今日/近 7 天 neurons 用量、剩余额度、按模型拆分 |
 
 写入 / 轮换 token：
 
@@ -186,7 +197,7 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 { "request_id": "…", "error": { "code": "invalid_request", "message": "…", "field": "text" } }
 ```
 
-### `GET /healthz`、`GET /`（调试页）
+### `GET /healthz`
 
 ## 配置（`wrangler.jsonc` 的 `vars`）
 
@@ -202,7 +213,6 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 | `TRANSLATION_TEMPERATURE` | `0.1` | 采样温度 |
 | `TRANSLATION_MAX_OUTPUT_TOKENS` | `2048` | 单分片输出上限 |
 | `CORS_ALLOWED_ORIGINS` | `*` | 逗号分隔的白名单 |
-| `PLAYGROUND_ENABLED` | `true` | 是否暴露 `/` 调试页 |
 
 > `llama-3.1-8b-instruct` 已于 2026-05-30 下线，默认模型换成 `llama-3.3-70b-instruct-fp8-fast`（实测可用）。
 > 带 reasoning 的模型（`qwen3-30b-a3b-fp8`、`gpt-oss-120b`）会先输出思考内容、正文可能为空，用作纯翻译需额外关掉 thinking，暂不建议。
@@ -272,6 +282,30 @@ printf '%s' "sk-trans-$(openssl rand -hex 20)" | npx wrangler secret put TRANSLA
 
 ---
 
+## Web 控制台
+
+访问 Worker 域名即为控制台，首次进入是登录页（Key 存在浏览器 localStorage，不落服务端）。
+
+| 页面 | 说明 |
+| --- | --- |
+| `#/stats`（默认） | 今日 neurons 用量环、剩余额度、请求数/tokens、近 7 天柱状图、按模型拆分 |
+| `#/translate` | 源文/译文双栏，语言与语气选择，⌘/Ctrl+Enter 提交，带模型/tokens/耗时/request id |
+| `#/setup` | 沉浸式翻译、OpenAI SDK、curl 三套接入片段 + 一键复制 |
+| `#/limits` | 并入接入页「限制」标签：字符上限、分片并发、网关、统计是否开启 |
+
+用量页需要一个只读的分析 Token（Worker 侧存为 secret，浏览器永远拿不到）：
+
+1. Dashboard → **My Profile → API Tokens → Create Token**
+2. 权限选 **Account → Account Analytics → Read**
+3. 写入 secret（无需重新部署）：
+
+```bash
+printf '%s' <account_id>  | npx wrangler secret put ANALYTICS_ACCOUNT_ID
+printf '%s' <api_token>   | npx wrangler secret put ANALYTICS_API_TOKEN
+```
+
+没配置时用量页会把这个步骤直接显示出来，不影响翻译功能。
+
 ## 查看额度 / 用量
 
 免费额度是 **10,000 neurons/天**（UTC 00:00 重置），但 CF 控制台里没有「剩余额度」这个数字，只有「今天已用」的曲线，所以容易找不到：
@@ -296,7 +330,7 @@ uv run ruff check src tests
 uv run pywrangler deploy --dry-run --outdir dist   # 校验打包（47 个模块）
 ```
 
-本地已验证：`/healthz`、`/`、`/translate`（缺少 AI binding 时返回结构化 502）、400/404 分支，以及 `observability.traces` 在本地 workerd 中确实产出 span。
+本地与线上已验证：静态资源与 SPA 回退、`/healthz`、`/api/verify`、`/api/usage`、`/translate`、`/v1/chat/completions`（含 SSE），以及 `observability.traces` 在本地 workerd 中确实产出 span。UI 在真实浏览器里跑过登录、翻译（1.4s / 219 tokens）与接入页。
 
 ## 已知边界
 

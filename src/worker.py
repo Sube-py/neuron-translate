@@ -20,6 +20,9 @@ from workers_ai import EnvBinding, WorkersAiProvider
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request: Any) -> Response:
+        if not is_api_request(request):
+            return await self.env.ASSETS.fetch(request)
+
         settings = Settings.from_env(self.env)
         logger = JsonLogger()
         adapter = self._build_adapter(settings, logger)
@@ -50,6 +53,16 @@ class Default(WorkerEntrypoint):
             ChatApp(chat_service, logger),
             logger,
         )
+
+
+API_PREFIXES = ("/api/", "/v1/", "/translate", "/healthz", "/health")
+
+
+def is_api_request(request: Any) -> bool:
+    from urllib.parse import urlsplit
+
+    path = urlsplit(str(getattr(request, "url", "/"))).path or "/"
+    return path.startswith(API_PREFIXES)
 
 
 def to_workers_response(response: HttpResponse) -> Response:

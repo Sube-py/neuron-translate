@@ -10,6 +10,13 @@
   "workers_dev": true,
   "preview_urls": false,
 
+  // Single-page UI served as static assets; /api/* and /v1/* stay in Python.
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+
   // Workers AI binding: env.AI.run() with AI Gateway options.
   "ai": {
     "binding": "AI"
@@ -25,8 +32,7 @@
     "TRANSLATION_CHUNK_CHARS": "3000",
     "TRANSLATION_MAX_TEXT_CHARS": "20000",
     "TRANSLATION_MAX_CONCURRENCY": "4",
-    "CORS_ALLOWED_ORIGINS": "*",
-    "PLAYGROUND_ENABLED": "true"
+    "CORS_ALLOWED_ORIGINS": "*"
   },
 
   "observability": {

@@ -195,22 +195,6 @@ def test_oversized_body_is_rejected() -> None:
     assert response.status == 413
 
 
-def test_playground_returns_html() -> None:
-    adapter, _ = make_adapter()
-    response = call(adapter, FakeRequest(method="GET", url="https://x.dev/"))
-
-    assert response.status == 200
-    assert response.content_type.startswith("text/html")
-    assert "Translation Playground" in response.body
-
-
-def test_playground_can_be_disabled() -> None:
-    adapter, _ = make_adapter(playground_enabled=False)
-    response = call(adapter, FakeRequest(method="GET", url="https://x.dev/"))
-
-    assert response.status == 404
-
-
 CHAT_BODY = {"messages": [{"role": "user", "content": "Say hello"}]}
 
 
@@ -355,3 +339,124 @@ def test_request_logging_records_path_and_user_agent() -> None:
     assert completed["status"] == 200
     assert completed["user_agent"].startswith("Immersive-Translate")
     assert "duration_ms" in completed
+
+
+class FakeUsageClient:
+    def __init__(self, report=None, error: Exception | None = None) -> None:
+        self._report = report
+        self._error = error
+
+    async def fetch(self):
+        if self._error is not None:
+            raise self._error
+        return self._report
+
+
+def test_session_endpoint_returns_limits() -> None:
+    adapter, _ = make_adapter()
+    response = call(
+        adapter,
+        FakeRequest(
+            method="GET",
+            url="https://x.dev/api/verify",
+            headers=FakeHeaders({"authorization": "Bearer"}),
+        ),
+    )
+
+    assert response.status == 200
+    assert response.body["ok"] is True
+    assert response.body["limits"]["max_text_chars"] == 20000
+
+
+def test_session_endpoint_requires_token() -> None:
+    adapter, _ = make_adapter(api_token="secret")
+    response = call(adapter, FakeRequest(method="GET", url="https://x.dev/api/verify"))
+
+    assert response.status == 401
+
+
+def test_usage_endpoint_reports_missing_configuration() -> None:
+    adapter, _ = make_adapter()
+    response = call(
+        adapter,
+        FakeRequest(
+            method="GET",
+            url="https://x.dev/api/usage",
+            headers=FakeHeaders({"authorization": "Bearer"}),
+        ),
+    )
+
+    assert response.status == 200
+    assert response.body["configured"] is False
+    assert "ANALYTICS_API_TOKEN" in response.body["setup"]["secrets"]
+
+
+def test_usage_endpoint_renders_report() -> None:
+    from usage import UsageReportBuilder
+
+    report = UsageReportBuilder(days=2).build(
+        [
+            {
+                "count": 4,
+                "sum": {"totalNeurons": 12.0, "totalInputTokens": 40, "totalOutputTokens": 20},
+                "dimensions": {
+                    "date": __import__("datetime")
+                    .datetime.now(__import__("datetime").UTC)
+                    .date()
+                    .isoformat(),
+                    "modelId": "@cf/meta/x",
+                },
+            }
+        ]
+    )
+    provider = FakeProvider()
+    settings = Settings()
+    adapter = HttpAdapter(
+        settings,
+        TranslationApp(settings, TranslationService(provider, chunker=TextChunker(1000)), logger),
+        ChatApp(ChatService(provider, default_model=settings.model), logger),
+        logger,
+        usage_client_factory=lambda: FakeUsageClient(report),
+    )
+
+    response = call(
+        adapter,
+        FakeRequest(
+            method="GET",
+            url="https://x.dev/api/usage",
+            headers=FakeHeaders({"authorization": "Bearer"}),
+        ),
+    )
+
+    assert response.status == 200
+    assert response.body["configured"] is True
+    assert response.body["today"]["neurons"] == 12.0
+    assert response.body["today"]["remaining"] == 9988.0
+    assert response.body["models"][0]["label"] == "@cf/meta/x"
+
+
+def test_usage_endpoint_surfaces_upstream_failure() -> None:
+    from usage import UsageUnavailable
+
+    provider = FakeProvider()
+    settings = Settings()
+    adapter = HttpAdapter(
+        settings,
+        TranslationApp(settings, TranslationService(provider, chunker=TextChunker(1000)), logger),
+        ChatApp(ChatService(provider, default_model=settings.model), logger),
+        logger,
+        usage_client_factory=lambda: FakeUsageClient(error=UsageUnavailable("boom")),
+    )
+
+    response = call(
+        adapter,
+        FakeRequest(
+            method="GET",
+            url="https://x.dev/api/usage",
+            headers=FakeHeaders({"authorization": "Bearer"}),
+        ),
+    )
+
+    assert response.status == 502
+    assert response.body["configured"] is True
+    assert "boom" in response.body["message"]

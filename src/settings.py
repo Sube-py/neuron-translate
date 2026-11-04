@@ -109,7 +109,13 @@ class Settings:
     max_concurrency: int = 4
     api_token: str | None = None
     allowed_origins: tuple[str, ...] = ("*",)
-    playground_enabled: bool = True
+    analytics_account_id: str | None = None
+    analytics_token: str | None = None
+    usage_days: int = 7
+
+    @property
+    def usage_configured(self) -> bool:
+        return bool(self.analytics_account_id and self.analytics_token)
 
     @classmethod
     def from_env(cls, env: object) -> Settings:
@@ -125,5 +131,7 @@ class Settings:
             max_concurrency=_as_int(env, "TRANSLATION_MAX_CONCURRENCY", 4, minimum=1, maximum=8),
             api_token=_read(env, "TRANSLATION_API_TOKEN"),
             allowed_origins=_as_csv(env, "CORS_ALLOWED_ORIGINS", ("*",)),
-            playground_enabled=_as_bool(env, "PLAYGROUND_ENABLED", True),
+            analytics_account_id=_read(env, "ANALYTICS_ACCOUNT_ID"),
+            analytics_token=_read(env, "ANALYTICS_API_TOKEN"),
+            usage_days=_as_int(env, "USAGE_DAYS", 7, minimum=1, maximum=7),
         )
