@@ -156,3 +156,14 @@ def test_parser_ignores_reasoning_only_responses() -> None:
     )
 
     assert completion.text == ""
+
+
+def test_reasoning_only_response_reports_budget_exhausted() -> None:
+    binding = FakeBinding(
+        {"choices": [{"message": {"content": None, "reasoning": "Let me think about this..."}}]}
+    )
+
+    with pytest.raises(ProviderError) as error:
+        asyncio.run(make_provider(binding).complete(MESSAGES))
+    assert error.value.code == "reasoning_budget_exhausted"
+    assert "max_tokens" in error.value.message

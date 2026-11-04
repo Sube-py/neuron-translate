@@ -95,6 +95,13 @@ class WorkersAiProvider(ChatProvider):
 
         completion = self._parser.parse(raw)
         if not completion.text:
+            if completion.reasoning:
+                raise ProviderError(
+                    "Model spent its whole output budget on reasoning, so no content "
+                    f"was returned. Raise max_tokens or use a non-reasoning model "
+                    f"(shape: {shape_of(raw)}).",
+                    code="reasoning_budget_exhausted",
+                )
             raise ProviderError(
                 f"Workers AI returned an empty translation (shape: {shape_of(raw)}).",
                 code="empty_response",

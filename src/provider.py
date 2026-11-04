@@ -17,6 +17,7 @@ class Completion:
     text: str
     usage: TokenUsage = field(default_factory=TokenUsage)
     cached: bool = False
+    reasoning: str = ""
 
 
 @runtime_checkable

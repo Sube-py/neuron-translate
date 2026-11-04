@@ -31,7 +31,19 @@ class WorkersAiResponseParser:
             text=self._text(raw),
             usage=self._usage(raw),
             cached=self._cached(raw),
+            reasoning=self._reasoning(raw),
         )
+
+    def _reasoning(self, raw: Any) -> str:
+        choices = to_py(field_of(raw, "choices"))
+        if isinstance(choices, (list, tuple)) and choices:
+            message = field_of(choices[0], "message")
+            for name in ("reasoning", "reasoning_content"):
+                value = field_of(message, name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        value = field_of(raw, "reasoning")
+        return value.strip() if isinstance(value, str) else ""
 
     def _text(self, raw: Any) -> str:
         direct = field_of(raw, "response")
