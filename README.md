@@ -303,3 +303,7 @@ uv run pywrangler deploy --dry-run --outdir dist   # 校验打包（47 个模块
 - OpenAI 兼容接口的流式是「生成完成后按 SSE 分帧」，不是逐 token 流。要真流式：`WorkersAiProvider` 增加 `stream: true`，把 binding 返回的 `ReadableStream` 经 `Response` 直接透传（Python Worker 里用 `js` 侧对象包装），`HttpAdapter` 跳过 `OpenAiFormatter.stream_body`
 - 纯文本/Markdown 效果好；代码块的逐行保护仅依赖 prompt，如需强保证可改为先抽取占位符再回填
 - Python Workers 仍处于 beta：`pywrangler` 需要 `uv >= 0.13.4`，且 AI binding 在本地 `dev` 时需要登录以走远端推理
+
+## License
+
+[MIT](LICENSE)
