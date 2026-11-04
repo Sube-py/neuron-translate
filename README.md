@@ -1,6 +1,8 @@
-# trans
+# neuron-translate
 
 Cloudflare Workers 上的翻译服务：**Python Worker + Workers AI + AI Gateway + Workers Tracing**。
+
+> 仓库名 `neuron-translate`，Worker 服务名是 `trans`（见 `wrangler.jsonc`）。改 Worker 名会导致自定义域需要重新绑定，所以两者故意不一致。
 
 - `POST /v1/chat/completions`：**OpenAI 兼容**接口，可直接给沉浸式翻译、NextChat、Cherry Studio、Bob 等插件/客户端用
 - `POST /translate`：自用的翻译接口，内建分片、术语表（glossary）、语气（tone）
