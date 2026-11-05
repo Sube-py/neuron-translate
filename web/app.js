@@ -18,6 +18,22 @@ const LANGS = [
   ["id", "Indonesia"],
 ];
 
+const TTS_LANG_BY_TARGET = {
+  "zh-CN": "zh",
+  "zh-TW": "zh",
+  zh: "zh",
+  en: "en",
+  ja: "ja",
+  ko: "ko",
+  fr: "fr",
+  es: "es",
+  it: "it",
+  pt: "pt",
+  "pt-BR": "pt",
+};
+
+const ttsLangFor = (target) => TTS_LANG_BY_TARGET[target] ?? null;
+
 const state = {
   key: localStorage.getItem(KEY_STORAGE) || "",
   session: null,
@@ -29,7 +45,14 @@ const state = {
   setupTab: "plugin",
   draft: { text: "", target: "zh-CN", source: "auto", tone: "", model: "" },
   ttsDraft: { text: "", model: "", voice: "", lang: "" },
-  tts: { busy: false, error: null, result: null, audioUrl: null },
+  tts: {
+    busy: false,
+    error: null,
+    result: null,
+    audioUrl: null,
+    playing: false,
+    autoplay: false,
+  },
   translate: { busy: false, result: null, error: null },
 };
 
@@ -220,6 +243,23 @@ function hydrate() {
   if (out && state.translate.result) out.textContent = state.translate.result.text;
   updateCounter();
   updateTtsCounter();
+  playPendingAudio();
+}
+
+function playPendingAudio() {
+  if (!state.tts.autoplay) return;
+  state.tts.autoplay = false;
+  const player = document.getElementById("player");
+  if (!player) return;
+  player.onended = () => {
+    state.tts.playing = false;
+    render();
+  };
+  player.play().catch(() => {
+    state.tts.playing = false;
+    toast("浏览器拦截了自动播放，点播放键试听", true);
+    render();
+  });
 }
 
 function updateCounter() {
@@ -411,7 +451,8 @@ function barsMarkup(days) {
 function modelsMarkup(models) {
   if (!models?.length) return `<p class="sub">这个时间窗口还没有调用记录。</p>`;
   return `
-    <table>
+    <div class="table-wrap">
+    <table class="models-table">
       <thead>
         <tr>
           <th>模型</th>
@@ -436,6 +477,7 @@ function modelsMarkup(models) {
           .join("")}
       </tbody>
     </table>
+    </div>
   `;
 }
 
@@ -598,6 +640,9 @@ function renderTranslate() {
           <div class="pane-head">
             <h3>译文</h3>
             <span class="spacer"></span>
+            <button class="btn secondary" id="speak-out" ${result && ttsLangFor(draft.target) ? "" : "disabled"}>
+              ${state.tts.busy ? "合成中…" : state.tts.playing ? "播放中" : "朗读"}
+            </button>
             <button class="btn secondary" id="copy-out" ${result ? "" : "disabled"}>复制</button>
           </div>
           <div class="out ${result ? "" : "empty"}" id="out">${result ? "" : "译文会显示在这里。"}</div>
@@ -635,6 +680,7 @@ function renderTranslate() {
       </div>
 
       ${error ? `<p class="login-error" style="margin-top:16px">${esc(error)}</p>` : ""}
+      ${state.tts.audioUrl ? `<audio id="player" controls src="${state.tts.audioUrl}" class="player"></audio>` : ""}
       ${
         result
           ? `<div class="meta">
@@ -692,6 +738,38 @@ async function runTranslate() {
   }
 }
 
+
+async function speakTranslation() {
+  const result = state.translate.result;
+  if (!result || state.tts.busy) return;
+
+  const lang = ttsLangFor(state.draft.target);
+  if (!lang) {
+    toast("MeloTTS 暂不支持该语言", true);
+    return;
+  }
+
+  state.tts.busy = true;
+  render();
+  try {
+    const { blob } = await apiBinary("/v1/audio/speech", {
+      model: "melotts",
+      input: result.text,
+      lang,
+    });
+    if (state.tts.audioUrl) URL.revokeObjectURL(state.tts.audioUrl);
+    state.tts.audioUrl = URL.createObjectURL(blob);
+    state.tts.playing = true;
+    state.tts.autoplay = true;
+    state.tts.error = null;
+  } catch (error) {
+    state.tts.playing = false;
+    toast(error.message === "unauthorized" ? "密钥已失效" : error.message, true);
+  } finally {
+    state.tts.busy = false;
+    render();
+  }
+}
 
 /* ---------- speech ---------- */
 
@@ -777,7 +855,7 @@ function renderSpeech() {
       ${
         result
           ? `<div style="margin-top:18px; display:grid; gap:12px">
-               <audio controls src="${result.audioUrl}" style="width:100%"></audio>
+               <audio id="player" controls src="${state.tts.audioUrl}" class="player"></audio>
                <div class="meta">
                  <span>model <b>${esc(result.model)}</b></span>
                  <span>字符 <b>${result.characters}</b></span>
@@ -814,8 +892,10 @@ async function runSpeech() {
     });
     if (state.tts.audioUrl) URL.revokeObjectURL(state.tts.audioUrl);
     const format = blob.type.includes("wav") ? "wav" : blob.type.includes("ogg") ? "ogg" : "mp3";
+    state.tts.audioUrl = URL.createObjectURL(blob);
+    state.tts.autoplay = true;
     state.tts.result = {
-      audioUrl: URL.createObjectURL(blob),
+      audioUrl: state.tts.audioUrl,
       format,
       bytes: blob.size,
       characters: text.length,
@@ -988,6 +1068,17 @@ document.addEventListener("click", (event) => {
     case "run-tts":
       runSpeech();
       break;
+    case "speak-out": {
+      const player = document.getElementById("player");
+      if (player && !player.paused) {
+        player.pause();
+        state.tts.playing = false;
+        render();
+      } else {
+        speakTranslation();
+      }
+      break;
+    }
     case "copy-out": {
       const out = document.getElementById("out");
       if (out && state.translate.result) copy(out.textContent);

@@ -691,6 +691,19 @@ th.mono {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.player {
+  width: 100%;
+  margin-top: 14px;
+  border-radius: 12px;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .pane-head h3 {
@@ -939,5 +952,218 @@ pre + pre {
   *::after {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------- mobile ---------- */
+@media (max-width: 720px) {
+  .shell {
+    padding: 16px 14px 56px;
+  }
+
+  .topbar {
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+
+  .brand-sub {
+    display: none;
+  }
+
+  .topbar > .btn.secondary {
+    margin-left: auto;
+  }
+
+  .nav {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    padding: 4px;
+    gap: 2px;
+  }
+
+  .nav a {
+    flex: 1;
+    text-align: center;
+    padding: 9px 4px;
+    font-size: 13px;
+  }
+
+  .card {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .card h2 {
+    font-size: 14.5px;
+  }
+
+  .stat-hero {
+    justify-content: center;
+    gap: 18px;
+  }
+
+  .ring {
+    width: 148px;
+    height: 148px;
+  }
+
+  .ring svg {
+    width: 148px;
+    height: 148px;
+  }
+
+  .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .metric {
+    padding: 11px 12px;
+  }
+
+  .metric .v {
+    font-size: 17px;
+  }
+
+  .metric .v small {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+  }
+
+  .bars {
+    height: 120px;
+    gap: 6px;
+  }
+
+  .bar-label {
+    font-size: 9.5px;
+  }
+
+  table {
+    font-size: 12px;
+    min-width: 520px;
+  }
+
+  .models-table {
+    min-width: 0;
+  }
+
+  .models-table th:nth-child(3),
+  .models-table td:nth-child(3),
+  .models-table th:nth-child(4),
+  .models-table td:nth-child(4) {
+    display: none;
+  }
+
+  .models-table td:first-child {
+    max-width: 46vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  th,
+  td {
+    padding: 8px;
+  }
+
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .controls .field {
+    min-width: 100%;
+  }
+
+  .controls .btn {
+    width: 100%;
+    padding: 14px 18px;
+  }
+
+  textarea,
+  .out {
+    min-height: 150px;
+  }
+
+  .meta {
+    gap: 6px 12px;
+    font-size: 11px;
+  }
+
+  .login {
+    padding: 16px;
+  }
+
+  .login-card {
+    padding: 26px 20px 22px;
+    border-radius: 22px;
+  }
+
+  .login h1 {
+    font-size: 23px;
+  }
+
+  .kv-row .v {
+    font-size: 12px;
+  }
+
+  pre {
+    font-size: 11.5px;
+    padding: 12px;
+  }
+
+  .tabs {
+    gap: 6px;
+  }
+
+  .tabs button {
+    flex: 1 1 auto;
+    padding: 9px 10px;
+    font-size: 12.5px;
+  }
+
+  .toast {
+    left: 14px;
+    right: 14px;
+    transform: translateY(20px);
+    text-align: center;
+  }
+
+  .toast.show {
+    transform: translateY(0);
+  }
+
+  .footer {
+    margin-top: 22px;
+    font-size: 10.5px;
+  }
+}
+
+@media (max-width: 420px) {
+  .stat-hero {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .stat-grid {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ring {
+    width: 132px;
+    height: 132px;
+  }
+
+  .ring svg {
+    width: 132px;
+    height: 132px;
+  }
+
+  .ring-label strong {
+    font-size: 22px;
   }
 }
